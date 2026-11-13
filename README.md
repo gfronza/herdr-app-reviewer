@@ -1,8 +1,9 @@
 # reviewer
 
-A code-review pane for [Herdr App](https://herdr.dev). It shows the uncommitted changes in a
-folder and in any other folders you add, as a unified diff with syntax colors. You comment on
-lines, then copy the comments or place them in an agent's input for it to act on.
+A code-review pane for [Herdr App](https://herdr.dev). It shows the changes in a folder and in
+any other folders you add, as a unified diff with syntax colors: uncommitted changes, everything
+on the branch, or chosen commits. You comment on lines, then copy the comments or place them in
+an agent's input for it to act on.
 
 It is inspired by [herdr-reviewr](https://github.com/persiyanov/herdr-reviewr), the review plugin for the Herdr TUI, and
 keeps its main keys.
@@ -31,18 +32,34 @@ The pane lists every uncommitted change: staged, unstaged, and untracked files, 
 git-ignored ones. Changes are grouped by repo. Select a file to see its diff. The list and the
 open diff update when files change on disk.
 
+**Scopes.** The buttons under the header, or `u`, `b`, and `g`, choose what the pane diffs:
+
+- **Uncommitted** (`u`), the default: changes since the last commit.
+- **Branch** (`b`): everything since the branch left its base, commits and uncommitted changes
+  together. Each repo diffs against its own base, named in its heading ("vs main"). The base is
+  `origin/HEAD`, else `init.defaultBranch`, `main`, or `master`. To pick another, press `B` or
+  click the base name. Type to filter the branches, or type any revision, like `HEAD~2` or a tag.
+  The pick is kept per repo across restarts; picking the default clears it.
+- **Commits** (`g`): one commit or a run of commits, in one repo. `G` lists recent commits from
+  every watched repo. Enter picks one. For a run, press Shift+Enter on one end, then Enter on the
+  other; one end must come after the other in history. `g` returns to the last pick.
+
+Every reviewer opens on Uncommitted.
+
 **More folders.** Select **Folders** to see the watched folders. **Add folder** opens the system
 folder picker. A folder inside a repo you already watch adds nothing new; the repo shows once.
 **Remove** takes a folder off the list. The base folder cannot be removed. The list is saved per
 base folder, so it comes back the next time a reviewer opens on that folder.
 
 **Comments.** Move to a line and press `c`, or select lines with `v` first. Type the comment and
-press Enter. A comment whose lines change on disk is kept and marked stale. If a commented
+press Enter. A comment belongs to the scope it was made in and shows only there: in Branch, to the
+repo's base at the time; in Commits, to that repo and run. A comment whose
+lines change on disk is kept and marked stale. If a commented
 file stops changing (reverted or committed), it stays listed under "No longer changed, with
 comments" until you send or delete its comments.
 
 **Copy and send.** `y` copies the review: for each repo, its path, then each comment with its
-file and line, the commented lines, and your text. `s` places the review in the agent's input in
+file and line (with its scope, when not Uncommitted), the commented lines, and your text. `s` places the review in the agent's input in
 the same tab and moves the keyboard there. It does not press Enter: you read it and submit. With
 several agents in the tab, a picker asks which one. Sending clears the comments.
 
@@ -60,8 +77,12 @@ several agents in the tab, a picker asks which one. Sending clears the comments.
 | `y` | Copy the review |
 | `s` | Send the review |
 | `l` | Switch between stacked and side-by-side layout (kept for every reviewer, across restarts) |
-| `Esc` | Clear the selection, or cancel the comment box |
-| `Enter` | Save the comment box |
+| `u` / `b` / `g` | Scope: uncommitted / branch / commits |
+| `B` / `G` | Pick the base branch / pick commits |
+| `Esc` | Clear the selection, or cancel the comment box or a picker |
+| `Enter` | Save the comment box, or choose in a picker |
+| `↑` / `↓` | Move in a picker |
+| `Shift+Enter` | Mark one end of a run in the commit picker |
 | `1`–`9` | Choose an agent in the send picker |
 
 Clicking a file opens its diff; clicking a diff line moves the cursor there.
@@ -70,11 +91,13 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 `reviewer.down`, `reviewer.up`, `reviewer.next-change`, `reviewer.prev-change`,
 `reviewer.next-file`, `reviewer.prev-file`, `reviewer.switch-area`, `reviewer.select`,
 `reviewer.comment`, `reviewer.edit`, `reviewer.delete`, `reviewer.copy`, `reviewer.send`,
-`reviewer.layout`, `reviewer.cancel`.
+`reviewer.layout`, `reviewer.cancel`, `reviewer.scope-uncommitted`, `reviewer.scope-branch`,
+`reviewer.scope-commits`, `reviewer.pick-base`, `reviewer.pick-commits`.
 
 ## What it runs and reads
 
-- It runs `git` in each watched repo, read-only: `status`, `diff`, and `rev-parse`, with
+- It runs `git` in each watched repo, read-only: `status`, `diff`, `ls-files`, `rev-parse`,
+  `merge-base`, `log`, `for-each-ref`, and `config` (to read `init.defaultBranch`), with
   `--no-optional-locks` and settings that keep git from writing the index. It never stages,
   commits, or changes a file, the index, or a ref.
 - It reads files outside its own folder: the files in the folders you watch, to show untracked
@@ -100,8 +123,6 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 
 Planned next, in this order. Plans may change.
 
-- **v1.1, more to diff against:** changes since the branch left its base, with a base picker;
-  one commit or a range of commits.
 - **v1.2, follow the agent:** only what the agent's latest turn changed, across watched repos;
   a switch to show only this session's changes.
 - **v1.3, reading comfort:** old and new code side by side in the diff; rendered Markdown; find

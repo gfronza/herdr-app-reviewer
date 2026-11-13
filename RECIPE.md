@@ -1,22 +1,28 @@
 # Reviewer
 
-A pane beside your terminals that shows every uncommitted change in a folder, and in other
-folders you add, as a unified diff with syntax colors. You comment on lines and ranges, then copy
+A pane beside your terminals that shows the changes in a folder, and in other folders you add, as
+a unified diff with syntax colors: uncommitted changes, everything on the branch, or chosen
+commits. You comment on lines and ranges, then copy
 the comments or place them in an agent's input without submitting.
 
 ![Reviewer](preview.png)
 
 ## What you see
 
-The pane is on the theme's `background`, 13px UI text, in four parts. By default they are
+The pane is on the theme's `background`, 13px UI text, in five parts. By default they are
 stacked from top to bottom; side by side, the file list moves to the right of the diff:
 
 - **Header, 36px.** "Reviewer" in semibold, then the base folder's path in `muted`, truncated. When
   comments are unsent, a pill reads "N unsent" (`accent` background, `accent_foreground` text,
-  11px). At the right, bordered 24px buttons: "Side by side" or "Stacked" (changes view only),
-  then "Folders", or "Changes" while the folders view is open.
-- **File list, up to 240px tall, scrolls; side by side, 35% of the pane wide (at most 320px) and full height.** One group per repo with changes: a 24px heading with
-  the repo's folder name in semibold and its full path in `dim`, both 11px. Under it, one 24px row
+  11px). At the right, a bordered 24px button: "Folders", or "Changes" while the folders view is
+  open.
+- **Toolbar, 32px, changes view only.** Scope buttons "Uncommitted", "Branch", and "Commits"; the
+  current one has a `selected` background. At the right, "Side by side" or "Stacked".
+- **File list, up to 240px tall, scrolls; side by side, 35% of the pane wide (at most 320px) and full height.** One group per repo with changes (in the branch
+  scope, every repo): a 24px heading with the repo's folder name in semibold and its full path in
+  `dim`, both 11px, then, in `accent`, the base ("vs main") or the picked commits ("commit
+  a1b2c3d"); clicking it opens that picker. A note under the heading in `dim` says when a repo has
+  nothing in the scope, when its picked base is gone, or why it has no range. Under it, one 24px row
   per changed file: a status letter (A in `ansi2`, M in `blocked`, D and U in `ansi1`), the folder
   part of the path in `dim`, the file name, then `+N` in `ansi2` and `−N` in `ansi1`. The
   selected file has a `selected` background; rows take `hover` under the pointer. Files that
@@ -34,7 +40,11 @@ stacked from top to bottom; side by side, the file list moves to the right of th
 - **Footer, 28px.** A key hint in `dim` 11px, replaced by the latest notice ("Copied 2
   comments", "Not sent: no agent in this tab") or an error in `blocked`. While commenting, it
   becomes a label ("Comment on src/a.ts") over a 30px input with an `accent` border. While
-  choosing an agent, it lists each one numbered, with its app, title, and status.
+  choosing an agent, it lists each one numbered, with its app, title, and status. While picking a
+  base or commits, it shows a title, a 30px filter input with an `accent` border, and up to ten
+  24px rows: branches with "default", "picked", and age in `dim`, plus a "Use revision" row for
+  typed text; or commits with the short id (`accent` when marked as a run's end), subject, and
+  repo and age in `dim`.
 
 The folders view replaces the list and diff: one 28px row per watched folder with its path, a
 note ("not a git repository", "missing", "in /path/of/repo"), and a Remove button, or "base" for
@@ -56,6 +66,14 @@ shows "No git repository here. Add a folder that holds one." and an "Add folder"
   it, `l` switches the layout, `Esc` clears the selection or cancels the box, `Enter` saves the box, `1`–`9` pick an agent.
   Each is also a `reviewer.<action>` command.
 - The layout is one setting for every reviewer and survives restarts.
+- Scope (`u`/`b`/`g`) starts at Uncommitted in every pane. Branch diffs each repo from its merge
+  base with the base to the working tree, untracked files included. Commits diffs from the
+  oldest picked commit's parent (or the empty tree) to the newest. `B` and `G` open the pickers;
+  in them, typing filters, `↑`/`↓` move, Enter picks, Shift+Enter marks a run's end, Esc closes.
+- Base picks survive restarts, per repo. A comment keeps the scope it was made in (Branch with
+  that repo's base, Commits with that repo and run) and shows only there; the review names it.
+  Switching scope clears the list until the new scope loads. A run's ends are ordered by
+  ancestry; two commits on separate lines of history are refused.
 - Clicking a file opens its diff; clicking a diff line moves the cursor there.
 - Send copies the review to the clipboard, focuses the agent's pane, and pastes. It never presses
   Enter. With one agent in the tab it goes straight there; with several, the footer asks which.
@@ -69,15 +87,15 @@ shows "No git repository here. Add a folder that holds one." and an "Add folder"
   `closeOverlay`.
 - `main.js` is the view. Pure modules hold the logic, testable under `node --test`:
   `scope.js` (the one function that decides which repos and files show), `git.js` (read-only git
-  commands and diff parsing), `syntax.js` (highlight.js in batches), `review.js` (comment anchors,
+  commands and diff parsing), `revs.js` (bases, merge bases, branches, and commits), `syntax.js` (highlight.js in batches), `review.js` (comment anchors,
   stale detection, the review text), and `nav.js` (cursor movement).
 - `herdr` functions: `exec` (git), `readTextFile`, `watchFolder` (one loop per repo),
   `pickFolder`, `shared`/`setShared` (key `reviewer.watch`: base folder → added folders; key
-  `reviewer.layout`: `"stacked"` or `"side"`),
+  `reviewer.layout`: `"stacked"` or `"side"`; key `reviewer.bases`: repo root → picked base),
   `agents`, `panes`, `focused`, `props`, `nextCommand`, `run` (`pane.split`, `pane.close`,
   `pane.focus`, `terminal.paste`), `closeOverlay`, `theme`, `settings`.
 - gpui-kit: `v_virtual_list` for the diff (clicks through `on_item_click`), `InputState`/`Input`
-  for the comment box, `Scrollbar`, `VirtualListScrollHandle`, `cx.write_to_clipboard`.
+  for the comment box and the picker filter (its `submit` event carries `shift`), `Scrollbar`, `VirtualListScrollHandle`, `cx.write_to_clipboard`.
 - Programs: `git` only, always with `--no-optional-locks -c core.fsmonitor=false -c
   diff.autoRefreshIndex=false`.
 - Art: none. Syntax colors map highlight.js scopes to theme colors: comment `dim`, keyword

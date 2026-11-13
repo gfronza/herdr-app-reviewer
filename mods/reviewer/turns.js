@@ -1,6 +1,6 @@
 // Turns: the tab's agents going from rest to work starts one, and a snapshot of every watched repo
 // taken then is its baseline. Snapshots live in a private temp folder, never in the repo.
-import { READ } from "./git.js";
+import { READ, alternates } from "./git.js";
 import { fileKey } from "./scope.js";
 
 // herdr reports `working` a little after the agent starts, and the pane samples it every 250 ms.
@@ -14,23 +14,26 @@ export function workState(statuses) {
   return statuses.every((s) => s === "idle" || s === "done") ? "resting" : "held";
 }
 
-// A start is rest → work; an end, a return to rest after work. `held` (blocked) keeps a turn open.
-// The first sample starts nothing: a turn already running has no baseline.
+// A start is a move into work while no turn is open; an end, a return to rest. `held` (an agent
+// blocked on a question) keeps a turn open, and with one agent blocked, another's turns still
+// start. The first sample starts nothing: a turn already running has no baseline.
 export function createTracker() {
-  let resting = false, worked = false;
+  let seen = false, open = false;
   return (state) => {
-    const edge = { started: state === "working" && resting, ended: worked && state === "resting" };
-    resting = state === "resting";
-    worked = state === "working" || (state === "held" && worked);
+    const edge = { started: state === "working" && seen && !open, ended: open && state === "resting" };
+    seen = true;
+    open = state === "working" || (state === "held" && open);
     return edge;
   };
 }
 
-// The snapshot's git never writes a split index: that would add a sharedindex file under .git.
-const SNAP = [...READ, "-c", "core.splitIndex=false"];
+// The snapshot's git writes no split index (a sharedindex file under .git) and runs no hook,
+// since a hook such as post-index-change can write anywhere.
+const SNAP = [...READ, "-c", "core.splitIndex=false", "-c", "core.hooksPath=/dev/null"];
+const SPLIT = "git's split index is on in this repo, so it has no turn snapshot";
 
-async function git(exec, root, env, args) {
-  const r = await exec("env", [...env, "git", ...SNAP, ...args], { cwd: root });
+async function git(exec, root, env, args, config = []) {
+  const r = await exec("env", [...env, "git", ...SNAP, ...config, ...args], { cwd: root });
   if (r.code !== 0) throw new Error(`git ${args[0]} failed in ${root}: ${r.stderr.trim()}`);
   return r.stdout;
 }
@@ -40,28 +43,53 @@ async function git(exec, root, env, args) {
  * mtime, without which git misses a same-size edit) and stored in `store`. No alternates while
  * writing: git would bump the mtime of each repo object it finds already there.
  */
-async function snapshot(exec, root, gitDir, store, index) {
-  const cp = await exec("cp", ["-p", `${gitDir}/index`, index], { cwd: root });
+async function snapshot(exec, root, b, store) {
+  // Reading a split index bumps its sharedindex file's mtime, and it can be turned on mid-turn.
+  if ((await exec("find", [b.gitDir, "-maxdepth", "1", "-name", "sharedindex.*"], { cwd: root })).stdout.trim()) throw new Error(SPLIT);
+  const cp = await exec("cp", ["-p", `${b.gitDir}/index`, b.index], { cwd: root });
   // A repo with no index yet stages from nothing.
-  if (cp.code !== 0 && (await exec("test", ["-e", `${gitDir}/index`], { cwd: root })).code === 0) throw new Error(cp.stderr.trim());
-  const env = [`GIT_INDEX_FILE=${index}`, `GIT_OBJECT_DIRECTORY=${store}`];
-  // A nested repo with no commit fails its own path; --ignore-errors stages the rest.
-  await exec("env", [...env, "git", ...SNAP, "add", "-A", "--ignore-errors"], { cwd: root });
-  // Clean files' blobs sit in the repo, not the store.
-  return (await git(exec, root, env, ["write-tree", "--missing-ok"])).trim();
+  if (cp.code !== 0 && (await exec("test", ["-e", `${b.gitDir}/index`], { cwd: root })).code === 0) throw new Error(cp.stderr.trim());
+  const env = [`GIT_INDEX_FILE=${b.index}`, `GIT_OBJECT_DIRECTORY=${store}`];
+  // A nested repo with no commit fails its own path, and --ignore-errors stages the rest with
+  // exit code 1; past that, git stopped and the copy still holds the index.
+  const add = await exec("env", [...env, "git", ...SNAP, ...b.noFilters, "add", "-A", "--ignore-errors"], { cwd: root });
+  if (add.code > 1) throw new Error(`git add failed in ${root}: ${add.stderr.trim()}`);
+  // Clean files' blobs sit in the repo, not the store. write-tree rereads a file whose mtime
+  // matches the index's, so it needs the filters off too.
+  return (await git(exec, root, env, ["write-tree", "--missing-ok"], b.noFilters)).trim();
+}
+
+// Clean filters (git-lfs) write under .git, so the snapshot stores files as they are on disk.
+async function noFilters(exec, root) {
+  const r = await exec("git", [...READ, "config", "--get-regexp", "^filter\\..*\\.(clean|process)$"], { cwd: root });
+  const names = new Set(r.stdout.split("\n").map((l) => /^filter\.(.+)\.(?:clean|process) /.exec(l)?.[1]).filter(Boolean));
+  return [...names].flatMap((n) => ["-c", `filter.${n}.clean=`, "-c", `filter.${n}.process=`, "-c", `filter.${n}.required=false`]);
 }
 
 /** Paths that differ between two snapshot trees. */
 async function changedPaths(exec, root, store, from, to) {
-  const out = await git(exec, root, [`GIT_ALTERNATE_OBJECT_DIRECTORIES=${store}`], ["diff", "--name-only", "-z", "--no-renames", from, to]);
+  const out = await git(exec, root, [alternates(store)], ["diff", "--name-only", "-z", "--no-renames", from, to]);
   return out.split("\0").filter(Boolean);
 }
 
+// The ignored files can never be in a snapshot, so a write to them cannot race one. Past a few
+// hundred paths, it is taken as a race rather than checked.
+async function anyNotIgnored(exec, root, paths) {
+  if (paths.length > 200) return true;
+  const r = await exec("git", [...READ, "check-ignore", "--", ...paths], { cwd: root });
+  if (r.code > 1) return true;
+  const ignored = new Set(r.stdout.split("\n").filter(Boolean));
+  return paths.some((p) => !ignored.has(p));
+}
+
 /**
- * @typedef {{ tree?: string, problem?: string, gitDir?: string, index?: string }} Base
- * @typedef {{ gen: number, dir: string, store: string, raceFrom: number, snapped: number, raced: boolean,
+ * @typedef {{ tree?: string, problem?: string, gitDir?: string, index?: string, noFilters?: string[] }} Base
+ * @typedef {{ gen: number, dir: string, store: string, raceFrom: number, snapped: number, raced: boolean, judged: boolean,
  *   ended: boolean, base: Map<string, Base>, now: Map<string, { tree?: string, paths?: string[], problem?: string }> }} Turn
  */
+
+// After this long, a write can no longer race a turn that has yet to start.
+const KEEP_WRITES = 5000;
 
 export class Turns {
   /**
@@ -77,7 +105,7 @@ export class Turns {
     this.current = null;
     /** @type {Turn | null} a started turn with no change yet */
     this.pending = null;
-    this.done = new Set(); this.writes = new Map(); this.queue = Promise.resolve();
+    this.done = new Set(); this.blind = new Map(); this.writes = new Map(); this.queue = Promise.resolve();
   }
 
   // One step at a time: a start, an end, and a refresh never interleave.
@@ -102,12 +130,22 @@ export class Turns {
     this.scratch = (await this.must("sh", ["-c", script, "sh", this.name ?? ""])).trim();
   }
 
-  /** A watched repo changed outside .git at `at`; a change as a turn starts may sit in its baseline. */
-  wrote(root, at) {
-    this.writes.set(root, at);
-    for (const t of [this.pending, this.current]) {
-      if (t && !t.ended && t.base.has(root) && at >= t.raceFrom && at <= t.snapped + RACE_AFTER) t.raced = true;
+  /** A watched repo's `paths` changed at `at`; one changed as a turn starts may sit in its baseline. */
+  wrote(root, at, paths) {
+    const outside = paths.filter((p) => !/\/\.git(\/|$)/.test(p));
+    if (!outside.length) return;
+    this.writes.set(root, [...(this.writes.get(root) ?? []).filter((w) => w.at > at - KEEP_WRITES), { at, paths: outside }]);
+  }
+
+  // Whether a file that is not ignored changed from just before the turn's edge to just after its
+  // snapshot. Settled once that window has passed; until then, judged again at each step.
+  async judge(t) {
+    if (!t || t.judged) return;
+    for (const root of t.base.keys()) {
+      const paths = (this.writes.get(root) ?? []).filter((w) => w.at >= t.raceFrom && w.at <= t.snapped + RACE_AFTER).flatMap((w) => w.paths);
+      if (paths.length && (await anyNotIgnored(this.exec, root, paths))) t.raced = true;
     }
+    t.judged = t.raced || this.clock() > t.snapped + RACE_AFTER;
   }
 
   start(roots, at) {
@@ -121,20 +159,18 @@ export class Turns {
       this.dirs.set(gen, dir);
       const base = new Map();
       await Promise.all(roots.map(async (root, slot) => base.set(root, await this.baseOf(root, store, `${dir}/index-${slot}`))));
-      const snapped = this.clock(), raceFrom = at - RACE_BEFORE;
-      const raced = roots.some((root) => this.writes.get(root) >= raceFrom && this.writes.get(root) <= snapped + RACE_AFTER);
-      this.pending = { gen, dir, store, raceFrom, snapped, raced, ended: false, base, now: new Map() };
+      for (const [root, b] of base) if (b.problem) this.blind.set(root, b.problem);
+      this.pending = { gen, dir, store, raceFrom: at - RACE_BEFORE, snapped: this.clock(), raced: false, judged: false, ended: false, base, now: new Map() };
+      await this.judge(this.pending);
     });
   }
 
   async baseOf(root, store, index) {
     try {
       const gitDir = (await git(this.exec, root, [], ["rev-parse", "--path-format=absolute", "--git-dir"])).trim();
-      // A split index reads through a sharedindex file under .git, and reading it bumps that file's mtime.
-      const shared = await this.exec("find", [gitDir, "-maxdepth", "1", "-name", "sharedindex.*"], { cwd: root });
-      if (shared.stdout.trim()) return { problem: "git's split index is on in this repo, so it has no turn snapshot" };
-      return { gitDir, index, tree: await snapshot(this.exec, root, gitDir, store, index) };
-    } catch (e) { return { problem: `no turn snapshot: ${why(e)}` }; }
+      const b = { gitDir, index, noFilters: await noFilters(this.exec, root) };
+      return { ...b, tree: await snapshot(this.exec, root, b, store) };
+    } catch (e) { return { problem: why(e) === SPLIT ? SPLIT : `no turn snapshot: ${why(e)}` }; }
   }
 
   /** The tree of every snapshotted repo now, and the paths changed since the turn started. */
@@ -143,7 +179,7 @@ export class Turns {
     await Promise.all([...t.base].map(async ([root, b]) => {
       if (!b.tree) { now.set(root, { problem: b.problem }); return; }
       try {
-        const tree = await snapshot(this.exec, root, b.gitDir, t.store, b.index);
+        const tree = await snapshot(this.exec, root, b, t.store);
         now.set(root, { tree, paths: await changedPaths(this.exec, root, t.store, b.tree, tree) });
       } catch (e) { now.set(root, { problem: why(e) }); }
     }));
@@ -153,20 +189,27 @@ export class Turns {
   /** Brings the latest turn up to date; a waiting turn takes over once it changes something. */
   refresh() {
     return this.run(async () => {
+      await this.judge(this.pending);
       if (this.pending) {
         const now = await this.measure(this.pending);
-        if (changed(now)) { await this.promote(now); return; }
+        if (changed(this.pending, now)) { await this.promote(now); return; }
       }
-      if (this.current) this.current.now = await this.measure(this.current);
+      // An ended turn keeps what it changed; later edits are not its own.
+      if (this.current && !this.current.ended) {
+        await this.judge(this.current);
+        this.current.now = await this.measure(this.current);
+        this.see(this.current.now);
+      }
     });
   }
 
   /** The agents rested: the turn's changes become part of the session. */
   end() {
     return this.run(async () => {
+      await this.judge(this.pending);
       if (this.pending) {
         const now = await this.measure(this.pending);
-        if (!changed(now)) { await this.drop(this.pending); return; }
+        if (!changed(this.pending, now)) { await this.drop(this.pending); return; }
         await this.promote(now);
         this.freeze(this.current, now);
       } else if (this.current && !this.current.ended) this.freeze(this.current, await this.measure(this.current));
@@ -175,7 +218,13 @@ export class Turns {
 
   freeze(t, now) {
     t.now = now; t.ended = true;
+    this.see(now);
     for (const [root, n] of now) for (const path of n.paths ?? []) this.done.add(fileKey(root, path));
+  }
+
+  // A repo a seen turn could not read: the session filter cannot tell its files apart.
+  see(now) {
+    for (const [root, n] of now) if (n.problem) this.blind.set(root, n.problem);
   }
 
   async promote(now) {
@@ -206,10 +255,14 @@ export class Turns {
     return r.stdout;
   }
 
-  /** Files the seen turns changed, the running one so far included, as `fileKey`s. */
+  /**
+   * Files the seen turns changed, the running one so far included, as `fileKey`s; and the repos a
+   * turn could not read, with the reason.
+   * @returns {{ files: Set<string>, blind: Map<string, string> }}
+   */
   session() {
     const live = this.current && !this.current.ended ? [...this.current.now].flatMap(([root, n]) => (n.paths ?? []).map((p) => fileKey(root, p))) : [];
-    return new Set([...this.done, ...live]);
+    return { files: new Set([...this.done, ...live]), blind: new Map(this.blind) };
   }
 
   /**
@@ -231,5 +284,7 @@ export class Turns {
 }
 
 const why = (e) => (e instanceof Error ? e.message : String(e));
-// A repo it cannot read counts as a change: showing why beats hiding the turn.
-const changed = (now) => [...now.values()].some((n) => n.paths?.length || n.problem);
+// A repo that stopped being readable counts as a change, so its reason shows; one unreadable
+// since the turn started does not, unless no repo is readable at all.
+const changed = (t, now) => [...now].some(([root, n]) => n.paths?.length || (n.problem && !t.base.get(root).problem))
+  || (t.base.size > 0 && [...t.base.values()].every((b) => b.problem));

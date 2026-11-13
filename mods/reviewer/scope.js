@@ -16,17 +16,33 @@ export const fileKey = (root, path) => `${root}\0${path}`;
  *       repos: Record<string, { from?: string, to?: string, problem?: string }> }} Scope
  */
 
-// The one place that decides which repos and files the reviewer shows. `only`, when given, keeps
-// just the files whose `fileKey` it holds: the "this session only" filter.
-/** @param {Scope} scope @param {Set<string> | null} [only] */
-export async function collectScope(folders, scope, exec, readText, only = null) {
+/** Each watched folder resolved, and the repos they hold, each once. */
+export async function resolveRoots(folders, exec) {
   const resolved = await Promise.all(folders.slice(0, MAX_FOLDERS).map((folder) => resolveFolder(folder, exec)));
-  const roots = [...new Set(resolved.filter((f) => f.state === "repo").map((f) => f.root))]
-    .filter((root) => scope.kind !== "commits" || root === scope.root);
-  const repos = (await Promise.all(roots.map((root) => repoIn(root, scope, exec, readText))))
-    .map((r) => (only ? { ...r, files: r.files.filter((f) => only.has(fileKey(r.root, f.path))) } : r));
+  return { resolved, roots: [...new Set(resolved.filter((f) => f.state === "repo").map((f) => f.root))] };
+}
+
+// The one place that decides which repos and files the reviewer shows. `only`, when given, is the
+// "this session only" filter: it keeps the files it holds, except in the repos it cannot judge,
+// which keep every file and say why. `hidden` names the files it took out.
+/** @param {Scope} scope @param {{ files: Set<string>, blind: Map<string, string> } | null} [only] */
+export async function collectScope(folders, scope, exec, readText, only = null) {
+  const { resolved, roots } = await resolveRoots(folders, exec);
+  const hidden = new Set();
+  const repos = (await Promise.all(roots.filter((root) => scope.kind !== "commits" || root === scope.root)
+    .map((root) => repoIn(root, scope, exec, readText))))
+    .map((r) => {
+      if (!only) return r;
+      if (only.blind.has(r.root)) return { ...r, problem: r.problem ?? `showing every file: this session can't be told apart here (${only.blind.get(r.root)})` };
+      const files = r.files.filter((f) => {
+        const key = fileKey(r.root, f.path), keep = only.files.has(key);
+        if (!keep) hidden.add(key);
+        return keep;
+      });
+      return { ...r, files };
+    });
   // A branch, commits, or turn repo stays listed with nothing in it, to show its base or its problem.
-  return { folders: resolved, repos: repos.filter((r) => r.files.length || scope.kind !== "uncommitted") };
+  return { folders: resolved, repos: repos.filter((r) => r.files.length || r.problem || scope.kind !== "uncommitted"), hidden };
 }
 
 const NONE = { files: [], cut: false };

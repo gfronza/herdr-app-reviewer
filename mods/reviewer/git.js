@@ -94,10 +94,9 @@ async function mapInWaves(items, fn) {
  * @typedef {{ from: string, to: string | null, objects?: string }} Range
  */
 
-// git reads a range's private objects as an alternate, which it never writes to.
-const withObjects = (exec, range) => (range?.objects
-  ? (cmd, args, opts) => exec("env", [`GIT_ALTERNATE_OBJECT_DIRECTORIES=${range.objects}`, cmd, ...args], opts)
-  : exec);
+// git reads an alternate object folder but never writes to it. Quoted, since the list splits on ":".
+export const alternates = (dir) => `GIT_ALTERNATE_OBJECT_DIRECTORIES="${dir.replace(/[\\"]/g, "\\$&")}"`;
+const withObjects = (exec, range) => (range?.objects ? (cmd, args, opts) => exec("env", [alternates(range.objects), cmd, ...args], opts) : exec);
 
 /**
  * Without a range, every uncommitted change; with one, the diff across that range.

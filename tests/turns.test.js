@@ -147,9 +147,9 @@ test("last turn: a newer turn removes the older snapshot unless a comment still 
 
 test("last turn: a write as the turn starts may sit in its baseline, so the turn is marked raced", async () => {
   const root = makeRepo({ "a.txt": "a\n" });
-  const now = 10000;
+  const now = 10000, a = path.join(root, "a.txt");
   const turns = new TestTurns(exec, { clock: () => now });
-  turns.wrote(root, 9000);
+  turns.wrote(root, 9000, [a]);
   await turns.start([root], 10000);
   write(root, "a.txt", "a\nturn\n");
   await turns.refresh();
@@ -159,18 +159,45 @@ test("last turn: a write as the turn starts may sit in its baseline, so the turn
 
   const late = new TestTurns(exec, { clock: () => now });
   await late.start([root], 10000);
-  late.wrote(root, 10200);
-  late.wrote(root, 10301);
+  late.wrote(root, 10200, [a]);
   write(root, "a.txt", "a\nlater\n");
   await late.refresh();
   assert.equal(late.last().raced, true);
 
   const clear = new TestTurns(exec, { clock: () => now });
+  clear.wrote(root, 8700, [a]);
   await clear.start([root], 10000);
-  clear.wrote(root, 10301);
+  clear.wrote(root, 10301, [a]);
   write(root, "a.txt", "a\nclear\n");
   await clear.refresh();
   assert.equal(clear.last().raced, false);
+});
+
+test("last turn: writes to ignored files and inside .git do not race a turn", async () => {
+  const root = makeRepo({ "a.txt": "a\n", ".gitignore": "dist/\n" });
+  const turns = new TestTurns(exec, { clock: () => 10000 });
+  turns.wrote(root, 9500, [path.join(root, "dist", "bundle.js"), path.join(root, ".git", "index")]);
+  await turns.start([root], 10000);
+  write(root, "a.txt", "a\nturn\n");
+  await turns.refresh();
+  assert.deepEqual([turns.last().raced, (await listed(root, turns)).files.map((f) => f.path)], [false, ["a.txt"]]);
+});
+
+test("last turn: an ended turn keeps what it changed; later edits by hand are not its own", async () => {
+  const root = makeRepo({ "a.txt": "a\n" });
+  const turns = new TestTurns(exec);
+  await turns.start([root], Date.now());
+  write(root, "a.txt", "a\nturn\n");
+  await turns.end();
+  write(root, "byhand.txt", "by hand\n");
+  await turns.refresh();
+  assert.deepEqual((await listed(root, turns)).files.map((f) => f.path), ["a.txt"]);
+});
+
+test("tracker: with one agent blocked on a question, another agent's turns still start", () => {
+  const observe = createTracker();
+  const edges = ["resting", "held", "working", "held", "working", "resting"].map((s) => observe(s));
+  assert.deepEqual(edges.map((e) => [e.started, e.ended]), [[false, false], [false, false], [true, false], [false, false], [false, false], [false, true]]);
 });
 
 test("session: the files every seen turn changed, not edits made between turns", async () => {
@@ -183,9 +210,77 @@ test("session: the files every seen turn changed, not edits made between turns",
   await turns.start([root], Date.now());
   write(root, "z.txt", "z\nturn two\n");
   await turns.refresh();
-  assert.deepEqual([...turns.session()].sort(), [fileKey(root, "x.txt"), fileKey(root, "z.txt")]);
-  const { repos } = await collectScope([root], { kind: "uncommitted" }, exec, readText, turns.session());
-  assert.deepEqual(repos[0].files.map((f) => f.path), ["x.txt", "z.txt"]);
+  assert.deepEqual([...turns.session().files].sort(), [fileKey(root, "x.txt"), fileKey(root, "z.txt")]);
+  const scope = await collectScope([root], { kind: "uncommitted" }, exec, readText, turns.session());
+  assert.deepEqual([scope.repos[0].files.map((f) => f.path), [...scope.hidden]], [["x.txt", "z.txt"], [fileKey(root, "y.txt")]]);
+});
+
+test("session: a repo no turn could read keeps every file and says why", async () => {
+  const split = makeRepo({ "s.txt": "s\n" }), plain = makeRepo({ "p.txt": "p\n" });
+  gitIn(split, "update-index", "--split-index");
+  const turns = new TestTurns(exec);
+  await turns.start([split, plain], Date.now());
+  write(split, "s.txt", "s\nturn\n");
+  write(plain, "p.txt", "p\nturn\n");
+  await turns.end();
+  const { repos } = await collectScope([split, plain], { kind: "uncommitted" }, exec, readText, turns.session());
+  assert.deepEqual(repos.map((r) => [r.files.map((f) => f.path), r.problem]), [
+    [["s.txt"], "showing every file: this session can't be told apart here (git's split index is on in this repo, so it has no turn snapshot)"],
+    [["p.txt"], null],
+  ]);
+});
+
+test("last turn: a repo that can never be read does not let an empty turn replace the last one", async () => {
+  const split = makeRepo({ "s.txt": "s\n" }), plain = makeRepo({ "p.txt": "p\n" });
+  gitIn(split, "update-index", "--split-index");
+  const turns = new TestTurns(exec);
+  await turns.start([split, plain], Date.now());
+  write(plain, "p.txt", "p\nturn\n");
+  await turns.end();
+  await turns.start([split, plain], Date.now());
+  await turns.end();
+  assert.deepEqual([turns.last().gen, (await listed(plain, turns)).files.map((f) => f.path)], [1, ["p.txt"]]);
+});
+
+test("last turn: snapshots run no hook and no clean filter, so .git stays untouched", async () => {
+  const root = makeRepo({ ".gitattributes": "*.bin filter=mark\n", "a.bin": "x\n" });
+  gitIn(root, "config", "filter.mark.clean", 'sh -c "touch .git/CLEAN_RAN; cat"');
+  gitIn(root, "config", "filter.mark.required", "true");
+  write(root, ".git/hooks/post-index-change", '#!/bin/sh\ntouch "$GIT_DIR/../HOOK_RAN" .git/HOOK_RAN\n');
+  fs.chmodSync(path.join(root, ".git/hooks/post-index-change"), 0o755);
+  const before = gitState(root);
+  const turns = new TestTurns(exec);
+  await turns.start([root], Date.now());
+  write(root, "a.bin", "x\ny\n");
+  await turns.end();
+  assert.deepEqual(gitState(root), before);
+  assert.deepEqual((await listed(root, turns)).files.map((f) => f.path), ["a.bin"]);
+});
+
+test("last turn: a split index turned on mid-turn stops the snapshots instead of touching .git", async () => {
+  const root = makeRepo({ "a.txt": "a\n" });
+  const turns = new TestTurns(exec);
+  await turns.start([root], Date.now());
+  write(root, "a.txt", "a\nturn\n");
+  gitIn(root, "update-index", "--split-index");
+  const before = gitState(root);
+  await turns.end();
+  assert.deepEqual(gitState(root), before);
+  assert.equal((await listed(root, turns)).problem, "no turn snapshot: git's split index is on in this repo, so it has no turn snapshot");
+});
+
+test("last turn: works when the temp folder's path holds a colon", async () => {
+  const root = makeRepo({ "a.txt": "a\n" });
+  const tmpdir = process.env.TMPDIR;
+  process.env.TMPDIR = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "reviewer-a:b-")));
+  try {
+    const turns = new TestTurns(exec);
+    await turns.start([root], Date.now());
+    write(root, "a.txt", "a\nturn\n");
+    await turns.end();
+    assert.match(turns.scratch, /:/);
+    assert.deepEqual((await listed(root, turns)).files.map((f) => f.path), ["a.txt"]);
+  } finally { process.env.TMPDIR = tmpdir; }
 });
 
 test("last turn: a repo with git's split index gets no snapshot and is left untouched", async () => {

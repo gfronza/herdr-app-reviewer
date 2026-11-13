@@ -4,7 +4,7 @@ import {
   agents, closeOverlay, exec, focused, nextCommand, panes, pickFolder, props, readTextFile, run,
   setShared, settings, shared, theme as herdrTheme, watchFolder, writeTextFile,
 } from "herdr";
-import { collectScope, fileKey, MAX_FOLDERS } from "./scope.js";
+import { collectScope, fileKey, MAX_FOLDERS, resolveRoots } from "./scope.js";
 import { fileDiff } from "./git.js";
 import { colorFor, createHighlighter, languageFor } from "./syntax.js";
 import { createComment, formatReview, locate } from "./review.js";
@@ -30,6 +30,9 @@ const run_exec = (cmd, args, opts) => exec(cmd, args, { cwd: opts?.cwd });
 const readText = (path) => readTextFile(path).catch(() => null);
 const repoName = (root) => root.split("/").pop();
 const clock = (date) => date.toTimeString().slice(0, 5);
+// A listed file; one kept for an earlier turn's comments also carries that turn's scope key.
+const entryKey = (f) => (f.key ? `${f.key}\0${fileKey(f.root, f.file.path)}` : fileKey(f.root, f.file.path));
+const turnOf = (key) => Number(/^turn:(\d+)$/.exec(key)?.[1] ?? NaN);
 
 // Opened with `mod.open:reviewer`, this copy is a one-shot launcher: it adds or
 // removes the reviewer pane in the current tab, then closes itself.
@@ -83,10 +86,13 @@ export default class Reviewer extends View {
     this.area = "files"; this.cursor = 0; this.sel = null; this.comments = []; this.nextId = 1;
     this.box = null; this.picking = null; this.view = "changes"; this.notice = null; this.watching = new Map();
     this.visible = { start: 0, end: 0 };
-    this.sessionOnly = false; this.since = new Date(); this.observe = createTracker();
-    // A turn's snapshots stay while an unsent comment made in it can still be diffed.
-    this.turns = new Turns(run_exec, { name: this.tab, keep: () => new Set(this.comments.map((c) => /^turn:(\d+)$/.exec(c.scope.key)?.[1]).filter(Boolean).map(Number)) });
-    this.turns.open().catch((e) => { this.error = String(e); });
+    this.sessionOnly = false; this.since = new Date(); this.observe = createTracker(); this.turnError = null;
+    // A turn's snapshots stay while an unsent comment, or one being written, can still be diffed.
+    this.turns = new Turns(run_exec, {
+      name: this.tab,
+      keep: () => new Set([...this.comments, this.box?.draft].filter(Boolean).map((c) => turnOf(c.scope.key))),
+    });
+    this.turns.open().catch((e) => { this.turnError = String(e); });
     cx.timer.every(250, (cx) => this.followAgents(cx));
     cx.spawn(async (cx) => {
       for (;;) {
@@ -149,8 +155,8 @@ export default class Reviewer extends View {
           this.scope = scope; this.spec = spec;
           this.files = [...this.scope.repos.flatMap((r) => r.files.map((file) => ({ root: r.root, range: r.range, file }))), ...this.orphans()];
           this.watch([...new Set(this.scope.folders.filter((f) => f.state === "repo").map((f) => f.root))], cx);
-          if (!this.files.some((f) => fileKey(f.root, f.file.path) === this.selected)) {
-            this.pick(this.files.length ? fileKey(this.files[0].root, this.files[0].file.path) : null);
+          if (!this.files.some((f) => entryKey(f) === this.selected)) {
+            this.pick(this.files.length ? entryKey(this.files[0]) : null);
           }
           await this.loadDiff(cx);
           this.error = null;
@@ -161,15 +167,24 @@ export default class Reviewer extends View {
   }
 
   // Files that left the changes list (reverted or committed) but still hold unsent comments,
-  // kept listed so those comments can be read, edited, and deleted.
+  // kept listed so those comments can be read, edited, and deleted. The turn scope also lists
+  // files with comments from earlier turns, which no other scope can show. A file the session
+  // filter hides keeps its comments hidden too.
   orphans() {
-    const listed = new Set(this.scope.repos.flatMap((r) => r.files.map((f) => fileKey(r.root, f.path))));
-    const seen = new Set();
-    return this.comments.filter((c) => c.scope.key === this.keyFor(c.root) && !listed.has(fileKey(c.root, c.path)) && !seen.has(fileKey(c.root, c.path)) && seen.add(fileKey(c.root, c.path)))
-      .map((c) => ({
-        root: c.root, orphan: true, range: this.scope.repos.find((r) => r.root === c.root)?.range ?? c.scope.range,
+    const shown = new Set([...this.scope.repos.flatMap((r) => r.files.map((f) => fileKey(r.root, f.path))), ...this.scope.hidden]);
+    const entries = new Map();
+    for (const c of this.comments) {
+      const own = c.scope.key === this.keyFor(c.root);
+      const earlier = !own && this.spec.kind === "turn" && !Number.isNaN(turnOf(c.scope.key));
+      if (!earlier && !(own && !shown.has(fileKey(c.root, c.path)))) continue;
+      const entry = {
+        root: c.root, orphan: true, ...(earlier ? { key: c.scope.key, label: c.scope.label } : {}),
+        range: earlier ? c.scope.range : this.scope.repos.find((r) => r.root === c.root)?.range ?? c.scope.range,
         file: { path: c.path, status: "·", add: 0, del: 0, untracked: false, binary: false },
-      }));
+      };
+      if (!entries.has(entryKey(entry))) entries.set(entryKey(entry), entry);
+    }
+    return [...entries.values()];
   }
 
   watch(roots, cx) {
@@ -182,7 +197,7 @@ export default class Reviewer extends View {
         try {
           while (this.watching.get(root) === token) {
             const paths = await watchFolder(root);
-            if (paths.some((p) => !/\/\.git(\/|$)/.test(p))) this.turns.wrote(root, Date.now());
+            this.turns.wrote(root, Date.now(), paths);
             if (this.watching.get(root) === token) this.refresh(cx);
           }
         } catch { if (this.watching.get(root) === token) this.watching.delete(root); }
@@ -194,21 +209,25 @@ export default class Reviewer extends View {
   followAgents(cx) {
     const { started, ended } = this.observe(workState(agents().filter((a) => a.tab === this.tab).map((a) => a.status)));
     if (!started && !ended) return;
-    const at = Date.now(), roots = this.watchedRoots();
+    const at = Date.now();
     cx.spawn(async (cx) => {
-      try { await (started ? this.turns.start(roots, at) : this.turns.end()); } catch (e) { this.error = String(e); }
+      // Resolved now, not read from the loaded scope, which is empty while a scope switch loads.
+      try {
+        await (started ? this.turns.start((await resolveRoots(this.folders(), run_exec)).roots, at) : this.turns.end());
+        this.turnError = null;
+      } catch (e) { this.turnError = String(e); }
       this.refresh(cx);
     });
   }
 
   async loadDiff(cx) {
-    const entry = this.files.find((f) => fileKey(f.root, f.file.path) === this.selected);
+    const entry = this.files.find((f) => entryKey(f) === this.selected);
     if (!entry) { this.setDiff(null, cx); return; }
     const spec = this.spec;
     const result = await fileDiff(entry.root, entry.file, run_exec, readText, entry.range);
-    if (this.selected !== fileKey(entry.root, entry.file.path) || this.spec !== spec) return;
-    const label = this.scope.repos.find((r) => r.root === entry.root)?.label ?? null;
-    const scope = { key: this.keyFor(entry.root), label, range: entry.range };
+    if (this.selected !== entryKey(entry) || this.spec !== spec) return;
+    const label = entry.key ? entry.label : this.scope.repos.find((r) => r.root === entry.root)?.label ?? null;
+    const scope = { key: entry.key ?? this.keyFor(entry.root), label, range: entry.range };
     this.setDiff({ key: this.selected, root: entry.root, path: entry.file.path, scope, untracked: entry.file.untracked, ...result }, cx);
     this.cursor = moveLine(this.diff.rows, this.cursor, 0);
   }
@@ -244,7 +263,7 @@ export default class Reviewer extends View {
   }
 
   select(entry, cx) {
-    const key = fileKey(entry.root, entry.file.path);
+    const key = entryKey(entry);
     if (key === this.selected) return;
     this.pick(key);
     cx.spawn(async (cx) => {
@@ -326,7 +345,7 @@ export default class Reviewer extends View {
     }
     for (const list of byFile.values()) {
       const { root, path, scope, untracked } = list[0];
-      const entry = this.spec && scope.key === this.keyFor(root) ? this.files.find((f) => f.root === root && f.file.path === path) : null;
+      const entry = this.spec && scope.key === this.keyFor(root) ? this.files.find((f) => !f.key && f.root === root && f.file.path === path) : null;
       const file = entry?.file ?? { path, untracked };
       const rows = (await fileDiff(root, file, run_exec, readText, entry ? entry.range : scope.range).catch(() => ({ rows: [] }))).rows;
       for (const c of list) if (locate(c, rows).stale) stale.add(c.id);
@@ -390,7 +409,7 @@ export default class Reviewer extends View {
   }
 
   selectedRoot() {
-    return this.files.find((f) => fileKey(f.root, f.file.path) === this.selected)?.root;
+    return this.files.find((f) => entryKey(f) === this.selected)?.root;
   }
 
   watchedRoots() {
@@ -536,7 +555,8 @@ export default class Reviewer extends View {
       colored: this.diff ? this.diff.rows.filter((_, i) => this.hl?.runs(i)).length : 0,
       comments: this.comments, items: this.layout().items.filter((it) => it.comment).map((it) => ({ id: it.comment.id, text: it.text, stale: it.stale })),
       picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked",
-      scope: this.scopeKind, spec: this.spec, sessionOnly: this.sessionOnly, session: [...this.turns.session()].map((k) => k.replace("\0", ":")), collapsed: [...this.collapsed], labels: this.scope?.repos?.map((r) => ({ root: r.root, label: r.label, missing: r.missing, problem: r.problem })),
+      scope: this.scopeKind, spec: this.spec, sessionOnly: this.sessionOnly, session: [...this.turns.session().files].map((k) => k.replace("\0", ":")),
+      turnError: this.turnError, earlier: this.files.filter((f) => f.key).map((f) => `${f.key} ${f.file.path}`), collapsed: [...this.collapsed], labels: this.scope?.repos?.map((r) => ({ root: r.root, label: r.label, missing: r.missing, problem: r.problem })),
       chooser: this.chooser && {
         kind: this.chooser.kind, root: this.chooser.root, at: this.chooser.at, mark: this.chooser.mark?.short ?? null,
         rows: this.chooserRows().map((r) => r.typed ?? r.name ?? `${repoName(r.root)} ${r.short} ${r.subject}`),
@@ -564,7 +584,7 @@ export default class Reviewer extends View {
   // Files in a collapsed repo are skipped; the orphans' group never collapses.
   stepFile(dir, cx) {
     const shown = this.files.filter((f) => f.orphan || !this.collapsed.has(f.root));
-    const at = shown.findIndex((f) => fileKey(f.root, f.file.path) === this.selected);
+    const at = shown.findIndex((f) => entryKey(f) === this.selected);
     const next = nextFile(shown, at, dir);
     if (next >= 0) this.select(shown[next], cx);
   }
@@ -668,26 +688,30 @@ export default class Reviewer extends View {
   }
 
   fileList(t, side) {
-    const repos = this.scope?.repos ?? [], orphans = this.files.filter((f) => f.orphan);
+    const repos = this.scope?.repos ?? [], orphans = this.files.filter((f) => f.orphan && !f.key), earlier = this.files.filter((f) => f.key);
+    const turnError = (this.scopeKind === "turn" || this.sessionOnly) && this.turnError;
     const shown = (r) => (this.collapsed.has(r.root) ? 0 : r.files.length);
+    const group = (list) => (list.length ? list.length + 1 : 0);
     const rowsCount = repos.reduce((n, r) => n + 1 + (r.missing ? 1 : 0) + (r.problem || !r.files.length ? 1 : 0) + shown(r), 0)
-      + (orphans.length ? orphans.length + 1 : 0) + (this.sessionOnly ? 1 : 0);
+      + group(orphans) + group(earlier) + (this.sessionOnly ? 1 : 0) + (turnError ? 1 : 0);
     const frame = div().flex_none().relative().border_color(this.area === "files" ? t.accent : t.border);
     return (side ? frame.w("35%").max_w(320).border_l(1) : frame.h(Math.min(rowsCount * 24 + 12, 240)).min_h(44).border_b(1))
       .child(v_flex().id("files").absolute().inset_0().overflow_y_scroll().p(6)
+        .when(Boolean(turnError), (e) => e.child(note(t, `Turn tracking failed: ${turnError}`)))
         .when(this.sessionOnly, (e) => e.child(note(t, `This session only: files the agent's turns changed since ${clock(this.since)}`)))
         .children(repos.map((r) => v_flex()
           .child(this.repoHeader(t, r))
           .when(Boolean(r.missing), (e) => e.child(note(t, `${r.missing} no longer resolves; showing ${r.base ?? "nothing"}`)))
           .when(Boolean(r.problem), (e) => e.child(note(t, r.problem)))
-          .when(!r.problem && !r.files.length, (e) => e.child(note(t, r.base ? `No changes since ${r.base}` : `No changes in ${r.label}`)))
+          .when(!r.problem && !r.files.length, (e) => e.child(note(t, `No changes${this.sessionOnly ? " from this session's turns" : ""} ${r.base ? `since ${r.base}` : `in ${r.label}`}`)))
           .when(!this.collapsed.has(r.root), (e) => e
-            .children(r.files.map((file) => this.fileRow(t, r.root, file)))
+            .children(r.files.map((file) => this.fileRow(t, { root: r.root, file })))
             .when(r.cut, (e) => e.child(note(t, "Showing the first 1,000 changed files"))))))
-        .when(orphans.length > 0, (e) => e.child(v_flex()
-          .child(h_flex().h(24).px(6).items_center().text_size(11).font_semibold().child("No longer changed, with comments"))
-          .children(orphans.map((o) => this.fileRow(t, o.root, o.file)))))
-        .when(!repos.length && !orphans.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error ?? (this.loadingSince || !this.scope ? "Loading changes…"
+        .children([{ title: "No longer changed, with comments", list: orphans }, { title: "Earlier turns, with comments", list: earlier }]
+          .filter(({ list }) => list.length).map(({ title, list }) => v_flex()
+            .child(h_flex().h(24).px(6).items_center().text_size(11).font_semibold().child(title))
+            .children(list.map((o) => this.fileRow(t, o)))))
+        .when(!repos.length && !orphans.length && !earlier.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error ?? (this.loadingSince || !this.scope ? "Loading changes…"
           : this.scopeKind === "commits" ? "The picked repo is no longer watched; press G to pick commits"
           : this.sessionOnly ? "No uncommitted changes from this session's turns" : "No uncommitted changes")))))
       .child(Scrollbar.vertical("files").absolute().inset_0());
@@ -709,12 +733,12 @@ export default class Reviewer extends View {
         .hover((s) => s.bg(t.hover)).on_click((_e, cx) => pick.open(cx)).child(pick.label)));
   }
 
-  fileRow(t, root, file) {
-    const key = fileKey(root, file.path), parts = file.path.split("/"), name = parts.pop();
+  fileRow(t, entry) {
+    const { file } = entry, key = entryKey(entry), parts = file.path.split("/"), name = parts.pop();
     const color = file.status === "A" ? t.ansi2 : file.status === "M" ? t.blocked : file.status === "·" ? t.dim : t.ansi1;
     return h_flex().id(`file-${key}`).h(24).flex_none().px(8).gap(8).items_center().rounded(6).cursor_pointer()
       .when(this.selected === key, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
-      .on_click((_e, cx) => { this.area = "files"; this.select(this.files.find((f) => f.root === root && f.file.path === file.path), cx); })
+      .on_click((_e, cx) => { this.area = "files"; this.select(this.files.find((f) => entryKey(f) === key), cx); })
       .child(div().w(12).text_size(11).text_color(color).child(file.status))
       .child(h_flex().flex_1().min_w(0)
         .child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : ""))

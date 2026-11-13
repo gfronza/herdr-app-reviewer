@@ -47,6 +47,7 @@ test("collectScope: folders in order, one group per repo, clean repos omitted", 
       { folder: gone, state: "missing" },
     ],
     repos: [{ root: changed, range: null, label: null, base: null, missing: null, problem: null, cut: false, files: [{ path: "src/a.txt", status: "M", add: 1, del: 0, untracked: false, binary: false }] }],
+    hidden: new Set(),
   });
 });
 

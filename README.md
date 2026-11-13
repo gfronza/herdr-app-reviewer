@@ -96,6 +96,20 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 - Lines longer than 500 characters are shown without syntax colors. Up to 1,000 changed files
   per repo and 1,500 diff lines per file are shown; past those, a notice says the view is cut.
 
+## Roadmap
+
+Planned next, in this order. Plans may change.
+
+- **v1.1, more to diff against:** changes since the branch left its base, with a base picker;
+  one commit or a range of commits.
+- **v1.2, follow the agent:** only what the agent's latest turn changed, across watched repos;
+  a switch to show only this session's changes.
+- **v1.3, reading comfort:** old and new code side by side in the diff; rendered Markdown; find
+  in file; search files by name and code by content.
+- **v1.4, durability and reach:** unsent comments that survive closing the pane; Linux and
+  Windows tested; spaces on other machines.
+- **v2, beyond changes:** a tab with every file in the repo, and a tab for pull requests.
+
 ## Credits
 
 Syntax colors come from [highlight.js](https://highlightjs.org) 11.12.0, vendored in

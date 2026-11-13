@@ -15,7 +15,12 @@ import { Turns, createTracker, workState } from "./turns.js";
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
 
-const ROW = 20;
+// The diff reads like the terminals beside it; its row and column sizes were tuned at 12px.
+function diffMetrics() {
+  const s = settings(), size = Number(s.font_size ?? 12), k = size / 12;
+  return { font: String(s.font_family ?? "JetBrains Mono"), size, row: Math.round(20 * k), gutter: Math.round(34 * k), char: 7 * k };
+}
+
 const KEYS = {
   j: "down", k: "up", "]": "next-change", "[": "prev-change", f: "next-file", F: "prev-file", tab: "switch-area",
   v: "select", c: "comment", e: "edit", d: "delete", y: "copy", s: "send", l: "layout", escape: "cancel",
@@ -747,19 +752,19 @@ export default class Reviewer extends View {
   }
 
   diffView(t) {
-    const diff = this.diff, { items, commented } = this.layout(), font = String(settings().font_family ?? "JetBrains Mono");
-    const width = Math.max(300, ...(diff?.rows ?? []).map((r) => r.text.length * 7 + 110));
+    const diff = this.diff, { items, commented } = this.layout(), m = diffMetrics();
+    const width = Math.max(300, ...(diff?.rows ?? []).map((r) => r.text.length * m.char + 2 * m.gutter + 45));
     const sel = this.range();
     // overflow_x_scrollbar() wraps its child, so the flex size goes on a plain parent.
-    return v_flex().flex_1().min_w(0).min_h(0).font_family(font).text_size(12)
+    return v_flex().flex_1().min_w(0).min_h(0).font_family(m.font).text_size(m.size)
       .when(Boolean(diff?.notice), (e) => e.child(div().p(12).text_color(t.dim).child(diff.notice)))
       .when(Boolean(diff?.cut), (e) => e.child(note(t, "Showing the first 1,500 lines")))
       .child(div().flex_1().min_h(0).relative().child(div().id("diff-x").size_full().overflow_x_scrollbar()
         .child(div().w_full().min_w(width).h_full()
-          .child(v_virtual_list("diff", items.length, ROW, (i) => items[i].row !== undefined ? `r${items[i].row}` : `c${items[i].comment.id}-${i}`,
+          .child(v_virtual_list("diff", items.length, m.row, (i) => items[i].row !== undefined ? `r${items[i].row}` : `c${items[i].comment.id}-${i}`,
             (range) => {
               this.visible = rowRange(items, range);
-              return items.slice(range.start, range.end).map((it) => it.comment ? this.commentRow(t, it) : this.diffRow(t, diff.rows[it.row], it.row, sel, commented.has(it.row)));
+              return items.slice(range.start, range.end).map((it) => it.comment ? this.commentRow(t, it, m) : this.diffRow(t, diff.rows[it.row], it.row, sel, commented.has(it.row), m));
             }).track_scroll(this.scroll).on_item_click((key, cx) => this.clickRow(key, cx)).size_full())))
         .child(Scrollbar.vertical("diff").viewport_from_layout().absolute().inset_0()))
       .when(!diff && this.files.length > 0, (e) => e.child(div().px(12).py(6).text_color(t.dim).child("Select a file to view its changes")));
@@ -772,9 +777,9 @@ export default class Reviewer extends View {
     cx.notify();
   }
 
-  diffRow(t, row, i, sel, commented) {
+  diffRow(t, row, i, sel, commented, m) {
     if (row.kind === "hunk") {
-      return h_flex().id(`row-${i}`).w_full().h(ROW).flex_none().px(12).bg(t.raised).text_color(t.dim)
+      return h_flex().id(`row-${i}`).w_full().h(m.row).flex_none().px(12).bg(t.raised).text_color(t.dim)
         .when(this.area === "diff" && this.cursor === i, (e) => e.bg(t.selected))
         .child(div().truncate().child(row.text));
     }
@@ -782,10 +787,10 @@ export default class Reviewer extends View {
     const bg = this.area === "diff" && this.cursor === i ? t.selected
       : sel && sel.from <= i && i <= sel.to ? t.selection
       : row.kind === "add" ? t.ansi2 + "18" : row.kind === "del" ? t.ansi1 + "18" : null;
-    return h_flex().id(`row-${i}`).w_full().h(ROW).flex_none().gap(8).when(Boolean(bg), (e) => e.bg(bg))
+    return h_flex().id(`row-${i}`).w_full().h(m.row).flex_none().gap(8).when(Boolean(bg), (e) => e.bg(bg))
       .child(div().w(3).h_full().flex_none().when(commented, (e) => e.bg(t.accent)))
-      .child(div().w(34).flex_none().text_right().text_color(t.dim).child(row.old === null ? "" : String(row.old)))
-      .child(div().w(34).flex_none().text_right().text_color(t.dim).child(row.new === null ? "" : String(row.new)))
+      .child(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(row.old === null ? "" : String(row.old)))
+      .child(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(row.new === null ? "" : String(row.new)))
       .child(div().w(10).flex_none().text_color(row.kind === "add" ? t.ansi2 : row.kind === "del" ? t.ansi1 : t.dim)
         .child(row.kind === "add" ? "+" : row.kind === "del" ? "−" : ""))
       .child(h_flex().flex_1().min_w(0).children(runs.map((r) => {
@@ -794,8 +799,8 @@ export default class Reviewer extends View {
       })));
   }
 
-  commentRow(t, it) {
-    return h_flex().w_full().h(ROW).flex_none().pl(48).gap(8).bg(t.raised).text_color(it.stale ? t.dim : t.foreground)
+  commentRow(t, it, m) {
+    return h_flex().w_full().h(m.row).flex_none().pl(48).gap(8).bg(t.raised).text_color(it.stale ? t.dim : t.foreground)
       .child(div().w(3).h_full().flex_none().bg(t.accent))
       .child(div().min_w(0).truncate().child(it.text))
       .when(it.first && it.stale, (e) => e.child(div().text_size(11).text_color(t.blocked).child("stale: lines changed")));

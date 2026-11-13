@@ -76,6 +76,7 @@ export default class Reviewer extends View {
     });
     this.filter.on("submit", (e, cx) => this.choose(Boolean(e.shift), cx));
     this.query = ""; this.chooser = null; this.scopeKind = "uncommitted"; this.commitPick = null;
+    this.collapsed = new Set();
     this.scope = null; this.files = []; this.selected = null; this.diff = null; this.hl = null; this.hlGen = 0;
     this.area = "files"; this.cursor = 0; this.sel = null; this.comments = []; this.nextId = 1;
     this.box = null; this.picking = null; this.view = "changes"; this.notice = null; this.watching = new Map();
@@ -481,6 +482,7 @@ export default class Reviewer extends View {
       "scope-commits": () => (this.commitPick ? this.setScope("commits", cx) : this.openCommitPicker(cx)),
       "pick-base": () => this.openBasePicker(null, cx),
       "pick-commits": () => this.openCommitPicker(cx),
+      "toggle-repo": () => this.toggleRepo(this.selectedRoot()),
       "chooser-next": () => this.moveChooser(1),
       "chooser-prev": () => this.moveChooser(-1),
       "chooser-enter": () => this.choose(false, cx),
@@ -509,7 +511,7 @@ export default class Reviewer extends View {
       colored: this.diff ? this.diff.rows.filter((_, i) => this.hl?.runs(i)).length : 0,
       comments: this.comments, items: this.layout().items.filter((it) => it.comment).map((it) => ({ id: it.comment.id, text: it.text, stale: it.stale })),
       picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked",
-      scope: this.scopeKind, spec: this.spec, labels: this.scope?.repos?.map((r) => ({ root: r.root, label: r.label, missing: r.missing, problem: r.problem })),
+      scope: this.scopeKind, spec: this.spec, collapsed: [...this.collapsed], labels: this.scope?.repos?.map((r) => ({ root: r.root, label: r.label, missing: r.missing, problem: r.problem })),
       chooser: this.chooser && {
         kind: this.chooser.kind, root: this.chooser.root, at: this.chooser.at, mark: this.chooser.mark?.short ?? null,
         rows: this.chooserRows().map((r) => r.typed ?? r.name ?? `${repoName(r.root)} ${r.short} ${r.subject}`),
@@ -534,10 +536,18 @@ export default class Reviewer extends View {
     this.reveal();
   }
 
+  // Files in a collapsed repo are skipped; the orphans' group never collapses.
   stepFile(dir, cx) {
-    const at = this.files.findIndex((f) => fileKey(f.root, f.file.path) === this.selected);
-    const next = nextFile(this.files, at, dir);
-    if (next >= 0) this.select(this.files[next], cx);
+    const shown = this.files.filter((f) => f.orphan || !this.collapsed.has(f.root));
+    const at = shown.findIndex((f) => fileKey(f.root, f.file.path) === this.selected);
+    const next = nextFile(shown, at, dir);
+    if (next >= 0) this.select(shown[next], cx);
+  }
+
+  toggleRepo(root) {
+    if (!root) return;
+    if (this.collapsed.has(root)) this.collapsed.delete(root);
+    else this.collapsed.add(root);
   }
 
   reveal() {
@@ -633,7 +643,9 @@ export default class Reviewer extends View {
 
   fileList(t, side) {
     const repos = this.scope?.repos ?? [], orphans = this.files.filter((f) => f.orphan);
-    const rowsCount = repos.reduce((n, r) => n + Math.max(r.files.length, 1) + 1 + (r.missing ? 1 : 0), 0) + (orphans.length ? orphans.length + 1 : 0);
+    const shown = (r) => (this.collapsed.has(r.root) ? 0 : r.files.length);
+    const rowsCount = repos.reduce((n, r) => n + 1 + (r.missing ? 1 : 0) + (r.problem || !r.files.length ? 1 : 0) + shown(r), 0)
+      + (orphans.length ? orphans.length + 1 : 0);
     const frame = div().flex_none().relative().border_color(this.area === "files" ? t.accent : t.border);
     return (side ? frame.w("35%").max_w(320).border_l(1) : frame.h(Math.min(rowsCount * 24 + 12, 240)).min_h(44).border_b(1))
       .child(v_flex().id("files").absolute().inset_0().overflow_y_scroll().p(6)
@@ -642,8 +654,9 @@ export default class Reviewer extends View {
           .when(Boolean(r.missing), (e) => e.child(note(t, `${r.missing} no longer resolves; showing ${r.base ?? "nothing"}`)))
           .when(Boolean(r.problem), (e) => e.child(note(t, r.problem)))
           .when(!r.problem && !r.files.length, (e) => e.child(note(t, r.base ? `No changes since ${r.base}` : `No changes in ${r.label}`)))
-          .children(r.files.map((file) => this.fileRow(t, r.root, file)))
-          .when(r.cut, (e) => e.child(note(t, "Showing the first 1,000 changed files")))))
+          .when(!this.collapsed.has(r.root), (e) => e
+            .children(r.files.map((file) => this.fileRow(t, r.root, file)))
+            .when(r.cut, (e) => e.child(note(t, "Showing the first 1,000 changed files"))))))
         .when(orphans.length > 0, (e) => e.child(v_flex()
           .child(h_flex().h(24).px(6).items_center().text_size(11).font_semibold().child("No longer changed, with comments"))
           .children(orphans.map((o) => this.fileRow(t, o.root, o.file)))))
@@ -656,8 +669,13 @@ export default class Reviewer extends View {
   repoHeader(t, r) {
     const pick = this.scopeKind === "branch" ? { label: r.base ? `vs ${r.base}` : "no base", open: (cx) => this.openBasePicker(r.root, cx) }
       : this.scopeKind === "commits" ? { label: r.label, open: (cx) => this.openCommitPicker(cx) } : null;
+    const collapsed = this.collapsed.has(r.root);
     return h_flex().h(24).px(6).gap(6).items_center().text_size(11)
-      .child(div().font_semibold().child(repoName(r.root)))
+      .child(h_flex().id(`repo-${r.root}`).flex_none().gap(4).items_center().rounded(4).cursor_pointer().hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => { this.toggleRepo(r.root); cx.notify(); })
+        .child(div().w(10).text_color(t.dim).child(collapsed ? "▸" : "▾"))
+        .child(div().font_semibold().child(repoName(r.root)))
+        .when(collapsed && r.files.length > 0, (e) => e.child(div().text_color(t.dim).child(`${r.files.length} file${r.files.length === 1 ? "" : "s"}`))))
       .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(r.root))
       .when(Boolean(pick), (e) => e.child(div().id(`scope-pick-${r.root}`).px(6).rounded(4).flex_none().cursor_pointer().text_color(t.accent)
         .hover((s) => s.bg(t.hover)).on_click((_e, cx) => pick.open(cx)).child(pick.label)));

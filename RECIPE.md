@@ -20,7 +20,9 @@ stacked from top to bottom; side by side, the file list moves to the right of th
   current one has a `selected` background. At the right, "Side by side" or "Stacked".
 - **File list, up to 240px tall, scrolls; side by side, 35% of the pane wide (at most 320px) and full height.** One group per repo with changes (in the branch
   scope, every repo): a 24px heading with the repo's folder name in semibold and its full path in
-  `dim`, both 11px, then, in `accent`, the base ("vs main") or the picked commits ("commit
+  `dim`, both 11px, after a `▾` (or `▸` and an "N files" count when collapsed: clicking the
+  chevron and name hides the repo's file rows, and file navigation skips them), then, in `accent`,
+  the base ("vs main") or the picked commits ("commit
   a1b2c3d"); clicking it opens that picker. A note under the heading in `dim` says when a repo has
   nothing in the scope, when its picked base is gone, or why it has no range. Under it, one 24px row
   per changed file: a status letter (A in `ansi2`, M in `blocked`, D and U in `ansi1`), the folder

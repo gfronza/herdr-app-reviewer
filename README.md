@@ -29,7 +29,8 @@ folder (its *base folder*). It stays bound to that folder when you focus other p
 key again to close it.
 
 The pane lists every uncommitted change: staged, unstaged, and untracked files, but not
-git-ignored ones. Changes are grouped by repo. Select a file to see its diff. The list and the
+git-ignored ones. Changes are grouped by repo; click a repo's name to collapse or expand its
+files, and `f`/`F` skip the files of a collapsed repo. Select a file to see its diff. The list and the
 open diff update when files change on disk.
 
 **Scopes.** The buttons under the header, or `u`, `b`, and `g`, choose what the pane diffs:
@@ -92,7 +93,8 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 `reviewer.next-file`, `reviewer.prev-file`, `reviewer.switch-area`, `reviewer.select`,
 `reviewer.comment`, `reviewer.edit`, `reviewer.delete`, `reviewer.copy`, `reviewer.send`,
 `reviewer.layout`, `reviewer.cancel`, `reviewer.scope-uncommitted`, `reviewer.scope-branch`,
-`reviewer.scope-commits`, `reviewer.pick-base`, `reviewer.pick-commits`.
+`reviewer.scope-commits`, `reviewer.pick-base`, `reviewer.pick-commits`, and
+`reviewer.toggle-repo` (collapses or expands the selected file's repo; no key by default).
 
 ## What it runs and reads
 

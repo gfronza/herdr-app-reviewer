@@ -232,8 +232,8 @@ test("quick leaves rows that step already colored", () => {
   assert.deepEqual(scopes(h, 1), ["comment"]);
 });
 
-test("a line over 1000 chars stays uncolored and does not affect its neighbours", () => {
-  const long = "/* " + "a".repeat(1200);
+test("a line over 500 chars stays uncolored and does not affect its neighbours", () => {
+  const long = "/* " + "a".repeat(600);
   const rows = rowsOf([["add", "const a = 1;"], ["add", long], ["add", "const b = 2;"]]);
   const h = createHighlighter(rows, "typescript");
   finish(h);

@@ -1,6 +1,7 @@
 import hljs from "./vendor/highlight.min.js";
 
-const MAX_LINE = 1000;
+// About 40 visible rows are colored in one slice, so 40 × 500 chars of minified code stays well under 500 ms.
+const MAX_LINE = 500;
 
 /** @typedef {{ text: string, scope: string | null }} Run */
 

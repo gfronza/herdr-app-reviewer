@@ -103,4 +103,4 @@ Syntax colors come from [highlight.js](https://highlightjs.org) 11.12.0, vendore
 
 ## License
 
-MIT, the same as herdr-reviewr. See `LICENSE`.
+MIT. See `LICENSE`.

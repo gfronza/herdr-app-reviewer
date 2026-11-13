@@ -277,3 +277,15 @@ test("reading a repo leaves its index and status unchanged", async () => {
   assert.equal(status(), before.status);
   assert.equal(fs.existsSync(path.join(root, ".git", "index.lock")), false);
 });
+
+// The app cuts a script slice off at 500 ms; a tab-expanding regex that rescans each line
+// from every position took that long on a few hundred long lines without tabs.
+test("fileDiff: long lines without tabs are read in linear time", async () => {
+  const line = "x".repeat(3999);
+  const root = makeRepo({ "min.js": `${line}a\n`.repeat(300) });
+  write(root, "min.js", `${line}b\n`.repeat(300));
+  const started = Date.now();
+  const { rows } = await fileDiff(root, { path: "min.js", untracked: false }, exec, readText);
+  assert.equal(rows.length, 601);
+  assert.ok(Date.now() - started < 1500, `took ${Date.now() - started} ms`);
+});

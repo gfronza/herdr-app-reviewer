@@ -76,8 +76,14 @@ export async function listChanges(root, exec, readText) {
   return { files, cut: paths.length > MAX_FILES };
 }
 
-// Text draws a tab as nothing: pad each to the next 4-column stop.
-const untab = (text) => text.replace(/[^\t]*\t/g, (s) => s.slice(0, -1).padEnd(s.length - 1 - ((s.length - 1) % 4) + 4));
+// Text draws a tab as nothing: pad each to the next 4-column stop. A split, not a regex:
+// /[^\t]*\t/g rescans the rest of a long tabless line from every position.
+function untab(text) {
+  const parts = text.split("\t");
+  let out = parts[0];
+  for (let i = 1; i < parts.length; i++) out = out.padEnd(out.length - (out.length % 4) + 4) + parts[i];
+  return out;
+}
 
 function rowText(raw) {
   const text = untab(raw.slice(0, MAX_LINE + 1));

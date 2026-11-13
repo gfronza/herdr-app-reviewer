@@ -38,7 +38,8 @@ open diff update when files change on disk.
 - **Uncommitted** (`u`), the default: changes since the last commit.
 - **Branch** (`b`): everything since the branch left its base, commits and uncommitted changes
   together. Each repo diffs against its own base, named in its heading ("vs main"). The base is
-  `origin/HEAD`, else `init.defaultBranch`, `main`, or `master`. To pick another, press `B` or
+  your local copy of the remote's default branch (as `origin/HEAD` names it), else
+  `init.defaultBranch`, `main`, or `master`; always a local branch. To pick another, press `B` or
   click the base name. Type to filter the branches, or type any revision, like `HEAD~2` or a tag.
   The pick is kept per repo across restarts; picking the default clears it.
 - **Commits** (`g`): one commit or a run of commits, in one repo. `G` lists recent commits from

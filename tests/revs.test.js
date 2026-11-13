@@ -38,12 +38,26 @@ function commit(dir, name) {
   return head(dir);
 }
 
-test("defaultBase: origin/HEAD comes first", async () => {
+test("defaultBase: the local branch origin/HEAD names comes first, not the remote one", async () => {
   const origin = makeRepo("trunk");
   const clone = tmp();
   execFileSync("git", ["clone", "-q", origin, clone]);
   gitIn(clone, "branch", "-q", "main");
-  assert.equal(await defaultBase(clone, exec), "origin/trunk");
+  assert.equal(await defaultBase(clone, exec), "trunk");
+});
+
+test("defaultBase: with no local copy of origin/HEAD's branch, falls back to main", async () => {
+  const origin = makeRepo("trunk");
+  gitIn(origin, "branch", "-q", "main");
+  const clone = tmp();
+  execFileSync("git", ["clone", "-q", "-b", "main", origin, clone]);
+  assert.equal(await defaultBase(clone, exec), "main");
+});
+
+test("defaultBase: a tag named main is not a branch", async () => {
+  const repo = makeRepo("other");
+  gitIn(repo, "tag", "main");
+  assert.equal(await defaultBase(repo, exec), null);
 });
 
 test("defaultBase: then init.defaultBranch, then main, then master", async () => {

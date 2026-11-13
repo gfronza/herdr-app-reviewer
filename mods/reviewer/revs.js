@@ -10,15 +10,12 @@ const tryGit = async (root, args, exec) => {
 export const commitOf = async (root, rev, exec) =>
   rev && !rev.startsWith("-") ? tryGit(root, ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], exec) : null;
 
-// Without a pick, the branch scope diffs against origin/HEAD, then init.defaultBranch, main, master.
+// Without a pick, the branch scope diffs against a local branch: the one origin/HEAD names, then
+// init.defaultBranch, main, master. Never the remote-tracking branch itself.
 export async function defaultBase(root, exec) {
-  const names = [
-    await tryGit(root, ["rev-parse", "--abbrev-ref", "--verify", "--quiet", "refs/remotes/origin/HEAD"], exec),
-    await tryGit(root, ["config", "init.defaultBranch"], exec),
-    "main",
-    "master",
-  ];
-  for (const name of names) if (name && (await commitOf(root, name, exec))) return name;
+  const remote = await tryGit(root, ["rev-parse", "--abbrev-ref", "--verify", "--quiet", "refs/remotes/origin/HEAD"], exec);
+  const names = [remote?.replace(/^origin\//, ""), await tryGit(root, ["config", "init.defaultBranch"], exec), "main", "master"];
+  for (const name of names) if (name && (await commitOf(root, `refs/heads/${name}`, exec))) return name;
   return null;
 }
 

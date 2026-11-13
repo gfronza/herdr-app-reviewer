@@ -55,7 +55,8 @@ async function readRangeStatus(root, range, exec) {
   ]);
   const codes = new Map(), parts = names.split("\0");
   for (let i = 0; i + 1 < parts.length; i += 2) codes.set(parts[i + 1], parts[i]);
-  for (const path of others.split("\0")) if (path && !path.endsWith("/")) codes.set(path, "??");
+  // A path dropped from the index but kept on disk keeps its tracked state, as in readStatus.
+  for (const path of others.split("\0")) if (path && !path.endsWith("/") && !codes.has(path)) codes.set(path, "??");
   return codes;
 }
 
@@ -99,7 +100,10 @@ export async function listChanges(root, exec, readText, range) {
     range ? readRangeStatus(root, range, exec) : readStatus(root, exec),
     head ? readNumstat(root, range, exec) : new Map(),
   ]);
-  const paths = [...codes.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  // Without an index refresh, a diff against the working tree names files whose stat changed but
+  // whose content did not; numstat compares content and leaves those out.
+  const paths = [...codes.keys()].filter((p) => !range || codes.get(p) === "??" || stats.has(p))
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const files = await mapInWaves(paths.slice(0, MAX_FILES), (path) => {
     const xy = codes.get(path);
     if (xy === "??" || !head) return newFile(root, path, xy, readText);

@@ -4,7 +4,7 @@ import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { branchRange, commitOf, commitsRange, defaultBase, listBranches, listCommits } from "../mods/reviewer/revs.js";
+import { branchRange, commitOf, commitsRange, defaultBase, listBranches, listCommits, orderRun } from "../mods/reviewer/revs.js";
 
 // Keep the user's git config (signing, hooks, init.defaultBranch) out of the fixtures.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -128,4 +128,25 @@ test("listCommits: HEAD's commits newest first, with subject", async () => {
   const empty = tmp();
   gitIn(empty, "init", "-q");
   assert.deepEqual(await listCommits(empty, exec), []);
+});
+
+test("commitsRange: a root commit in a SHA-256 repo diffs from that format's empty tree", async () => {
+  const repo = tmp();
+  gitIn(repo, "init", "-q", "--object-format=sha256", "-b", "main");
+  const root = commit(repo, "only");
+  assert.deepEqual(await commitsRange(repo, root, root, exec),
+    { from: "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321", to: root });
+});
+
+test("orderRun: orders a run by ancestry, not log position, and refuses unrelated ends", async () => {
+  const repo = makeRepo();
+  gitIn(repo, "checkout", "-q", "-b", "side");
+  const side = commit(repo, "side");
+  gitIn(repo, "checkout", "-q", "main");
+  const later = commit(repo, "later");
+  gitIn(repo, "merge", "-q", "--no-edit", "side");
+  const merge = head(repo);
+  assert.deepEqual(await orderRun(repo, merge, side, exec), [side, merge]);
+  assert.deepEqual(await orderRun(repo, later, later, exec), [later, later]);
+  assert.equal(await orderRun(repo, side, later, exec), null);
 });

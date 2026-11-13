@@ -38,17 +38,31 @@ export async function branchRange(root, pick, exec) {
   return { base, missing, range: { from, to: null }, problem: null };
 }
 
-const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
 /**
  * A run of commits from `first` (oldest) to `last`, both included; a root commit diffs against
- * the empty tree. Null when either end no longer resolves.
+ * the empty tree, whose id depends on the repo's hash (SHA-1 or SHA-256). Null when either end
+ * no longer resolves.
  * @returns {Promise<import("./git.js").Range | null>}
  */
 export async function commitsRange(root, first, last, exec) {
   const [a, b] = await Promise.all([commitOf(root, first, exec), commitOf(root, last, exec)]);
   if (!a || !b) return null;
-  return { from: (await commitOf(root, `${a}^`, exec)) ?? EMPTY_TREE, to: b };
+  const parent = await commitOf(root, `${a}^`, exec);
+  // Without -w, hash-object only prints the id; it writes no object.
+  return { from: parent ?? (await tryGit(root, ["hash-object", "-t", "tree", "/dev/null"], exec)), to: b };
+}
+
+/**
+ * Orders two commits as [oldest, newest] by ancestry: log order puts a side branch's commits
+ * between main's, and first^..last would then leave some out. Null when neither descends from
+ * the other.
+ */
+export async function orderRun(root, x, y, exec) {
+  if (x === y) return [x, y];
+  const isAncestor = async (a, b) => (await exec("git", [...READ, "merge-base", "--is-ancestor", a, b], { cwd: root })).code === 0;
+  if (await isAncestor(x, y)) return [x, y];
+  if (await isAncestor(y, x)) return [y, x];
+  return null;
 }
 
 const BRANCHES = 200;

@@ -364,3 +364,20 @@ test("listChanges keeps its outstanding file reads well under the app's host cal
   assert.equal(cut, true);
   assert.ok(most <= 100, `peak ${most}`);
 });
+
+test("listChanges with a range to the working tree leaves out files whose stat changed but not their content", async () => {
+  const root = makeRepo({ "same.txt": "s\n", "edit.txt": "e\n" });
+  const from = gitIn(root, "rev-parse", "HEAD").trim();
+  write(root, "edit.txt", "E\n");
+  const later = new Date(Date.now() + 60_000);
+  fs.utimesSync(path.join(root, "same.txt"), later, later);
+  assert.deepEqual((await listChanges(root, exec, readText, { from, to: null })).files.map((f) => f.path), ["edit.txt"]);
+});
+
+test("listChanges with a range to the working tree keeps a file dropped from the index but kept on disk as deleted", async () => {
+  const root = makeRepo({ "keep.txt": "k\n" });
+  const from = gitIn(root, "rev-parse", "HEAD").trim();
+  gitIn(root, "rm", "-q", "--cached", "keep.txt");
+  assert.deepEqual((await listChanges(root, exec, readText, { from, to: null })).files,
+    [{ path: "keep.txt", status: "D", add: 0, del: 1, untracked: false, binary: false }]);
+});

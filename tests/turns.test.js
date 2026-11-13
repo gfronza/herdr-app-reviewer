@@ -280,7 +280,11 @@ test("last turn: works when the temp folder's path holds a colon", async () => {
     await turns.end();
     assert.match(turns.scratch, /:/);
     assert.deepEqual((await listed(root, turns)).files.map((f) => f.path), ["a.txt"]);
-  } finally { process.env.TMPDIR = tmpdir; }
+  } finally {
+    // Assigning undefined to process.env stores the string "undefined"; CI runners have no TMPDIR.
+    if (tmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = tmpdir;
+  }
 });
 
 test("last turn: a repo with git's split index gets no snapshot and is left untouched", async () => {

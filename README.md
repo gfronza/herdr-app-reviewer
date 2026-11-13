@@ -59,6 +59,7 @@ several agents in the tab, a picker asks which one. Sending clears the comments.
 | `e` / `d` | Edit / delete the comment at the cursor |
 | `y` | Copy the review |
 | `s` | Send the review |
+| `l` | Switch between stacked and side-by-side layout (kept for every reviewer, across restarts) |
 | `Esc` | Clear the selection, or cancel the comment box |
 | `Enter` | Save the comment box |
 | `1`–`9` | Choose an agent in the send picker |
@@ -69,7 +70,7 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 `reviewer.down`, `reviewer.up`, `reviewer.next-change`, `reviewer.prev-change`,
 `reviewer.next-file`, `reviewer.prev-file`, `reviewer.switch-area`, `reviewer.select`,
 `reviewer.comment`, `reviewer.edit`, `reviewer.delete`, `reviewer.copy`, `reviewer.send`,
-`reviewer.cancel`.
+`reviewer.layout`, `reviewer.cancel`.
 
 ## What it runs and reads
 

@@ -8,21 +8,21 @@ the comments or place them in an agent's input without submitting.
 
 ## What you see
 
-The pane is one column on the theme's `background`, 13px UI text, split into four parts from top
-to bottom:
+The pane is on the theme's `background`, 13px UI text, in four parts. By default they are
+stacked from top to bottom; side by side, the file list moves to the right of the diff:
 
 - **Header, 36px.** "Reviewer" in semibold, then the base folder's path in `muted`, truncated. When
   comments are unsent, a pill reads "N unsent" (`accent` background, `accent_foreground` text,
-  11px). At the right, a bordered 24px button reads "Folders", or "Changes" while the folders view
-  is open.
-- **File list, up to 240px tall, scrolls.** One group per repo with changes: a 24px heading with
+  11px). At the right, bordered 24px buttons: "Side by side" or "Stacked" (changes view only),
+  then "Folders", or "Changes" while the folders view is open.
+- **File list, up to 240px tall, scrolls; side by side, 35% of the pane wide (at most 320px) and full height.** One group per repo with changes: a 24px heading with
   the repo's folder name in semibold and its full path in `dim`, both 11px. Under it, one 24px row
   per changed file: a status letter (A in `ansi2`, M in `blocked`, D and U in `ansi1`), the folder
   part of the path in `dim`, the file name, then `+N` in `ansi2` and `−N` in `ansi1`. The
   selected file has a `selected` background; rows take `hover` under the pointer. Files that
   stopped changing but hold comments sit last, under "No longer changed, with comments", with a
-  `·` status in `dim`. The list's bottom border is `accent` while it has the keyboard, `border`
-  otherwise.
+  `·` status in `dim`. The list's bottom border (left border side by side) is `accent` while it
+  has the keyboard, `border` otherwise.
 - **Diff, fills the rest.** In the settings' mono font at 12px, 20px rows, scrolling both ways.
   Hunk headers on `raised` in `dim`. Each line: a 3px bar (`accent` when the line is commented),
   the old and new line numbers right-aligned in 34px columns in `dim`, a `+` or `−` mark, then the
@@ -53,8 +53,9 @@ shows "No git repository here. Add a folder that holds one." and an "Add folder"
 - Keys while the pane has the keyboard: `j`/`k` move, `]`/`[` jump between change blocks, `f`/`F`
   change files, `Tab` switches between list and diff, `v` starts and ends a selection, `c`
   comments, `e`/`d` edit and delete the comment at the cursor, `y` copies the review, `s` sends
-  it, `Esc` clears the selection or cancels the box, `Enter` saves the box, `1`–`9` pick an agent.
+  it, `l` switches the layout, `Esc` clears the selection or cancels the box, `Enter` saves the box, `1`–`9` pick an agent.
   Each is also a `reviewer.<action>` command.
+- The layout is one setting for every reviewer and survives restarts.
 - Clicking a file opens its diff; clicking a diff line moves the cursor there.
 - Send copies the review to the clipboard, focuses the agent's pane, and pastes. It never presses
   Enter. With one agent in the tab it goes straight there; with several, the footer asks which.
@@ -71,7 +72,8 @@ shows "No git repository here. Add a folder that holds one." and an "Add folder"
   commands and diff parsing), `syntax.js` (highlight.js in batches), `review.js` (comment anchors,
   stale detection, the review text), and `nav.js` (cursor movement).
 - `herdr` functions: `exec` (git), `readTextFile`, `watchFolder` (one loop per repo),
-  `pickFolder`, `shared`/`setShared` (key `reviewer.watch`: base folder → added folders),
+  `pickFolder`, `shared`/`setShared` (key `reviewer.watch`: base folder → added folders; key
+  `reviewer.layout`: `"stacked"` or `"side"`),
   `agents`, `panes`, `focused`, `props`, `nextCommand`, `run` (`pane.split`, `pane.close`,
   `pane.focus`, `terminal.paste`), `closeOverlay`, `theme`, `settings`.
 - gpui-kit: `v_virtual_list` for the diff (clicks through `on_item_click`), `InputState`/`Input`
@@ -113,5 +115,7 @@ shows "No git repository here. Add a folder that holds one." and an "Add folder"
   `c` covers four lines; editing a commented line on disk marks the comment stale.
 - `y` puts the review on the clipboard, repos in path order; `s` with one idle agent fills its
   input without submitting, focuses it, and clears the comments.
+- `l` puts the file list right of the diff, and again back on top; the choice holds after a
+  restart.
 - A 1,500-line TypeScript diff shows text at once and is fully colored within a second, with no
   interruption in the app's log.

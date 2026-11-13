@@ -16,9 +16,10 @@ const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (her
 const ROW = 20;
 const KEYS = {
   j: "down", k: "up", "]": "next-change", "[": "prev-change", f: "next-file", F: "prev-file", tab: "switch-area",
-  v: "select", c: "comment", e: "edit", d: "delete", y: "copy", s: "send", escape: "cancel",
+  v: "select", c: "comment", e: "edit", d: "delete", y: "copy", s: "send", l: "layout", escape: "cancel",
 };
 const WATCH_KEY = "reviewer.watch";
+const LAYOUT_KEY = "reviewer.layout";
 const run_exec = (cmd, args, opts) => exec(cmd, args, { cwd: opts?.cwd });
 // readTextFile rejects on bytes that are not UTF-8; git.js expects null for an unreadable file.
 const readText = (path) => readTextFile(path).catch(() => null);
@@ -42,6 +43,9 @@ const extraFolders = (base) => /** @type {Record<string, string[]>} */ (shared(W
 function saveExtraFolders(base, folders) {
   setShared(WATCH_KEY, { .../** @type {object} */ (shared(WATCH_KEY) ?? {}), [base]: folders });
 }
+
+// One layout for every reviewer, kept in shared state so it survives restarts.
+const sideBySide = () => shared(LAYOUT_KEY) === "side";
 
 export default class Reviewer extends View {
   init(_props, cx) {
@@ -313,6 +317,7 @@ export default class Reviewer extends View {
       delete: () => { const c = comment(); if (c) this.deleteComment(c, cx); },
       copy: () => this.copy(cx),
       send: () => this.send(cx),
+      layout: () => setShared(LAYOUT_KEY, sideBySide() ? "stacked" : "side"),
       cancel: () => { this.sel = null; this.picking = null; this.notice = null; },
       dump: () => this.dump(),
       // Test seam, with dump: stands in for typing into the comment box and pressing Enter.
@@ -336,7 +341,7 @@ export default class Reviewer extends View {
       diff: this.diff && { path: this.diff.path, notice: this.diff.notice, cut: this.diff.cut, rows: this.diff.rows.length },
       colored: this.diff ? this.diff.rows.filter((_, i) => this.hl?.runs(i)).length : 0,
       comments: this.comments, items: this.layout().items.filter((it) => it.comment).map((it) => ({ id: it.comment.id, text: it.text, stale: it.stale })),
-      picking: this.picking, notice: this.notice, error: this.error, view: this.view,
+      picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked",
     };
     writeTextFile(`${path}-${Date.now()}.json`, JSON.stringify(state, null, 1), null);
   }
@@ -412,6 +417,7 @@ export default class Reviewer extends View {
       .child(div().font_semibold().child("Reviewer"))
       .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(this.base ?? "No folder"))
       .when(unsent > 0, (e) => e.child(div().px(6).rounded(4).bg(t.accent).text_color(t.accent_foreground).text_size(11).child(`${unsent} unsent`)))
+      .when(this.view === "changes", (e) => e.child(button(t, "layout", sideBySide() ? "Stacked" : "Side by side", (cx) => this.act("layout", cx))))
       .child(button(t, "folders", this.view === "folders" ? "Changes" : "Folders", (cx) => { this.view = this.view === "folders" ? "changes" : "folders"; cx.notify(); }));
   }
 
@@ -437,16 +443,17 @@ export default class Reviewer extends View {
         .child(div().text_color(t.muted).child("No git repository here. Add a folder that holds one."))
         .child(h_flex().child(button(t, "add-folder-empty", "Add folder", (cx) => this.addFolder(cx))));
     }
-    return v_flex().flex_1().min_h(0)
-      .child(this.fileList(t))
-      .child(this.diffView(t));
+    // Side by side puts the files on the right, as herdr-reviewr does.
+    return sideBySide()
+      ? h_flex().flex_1().min_h(0).items_stretch().child(this.diffView(t)).child(this.fileList(t, true))
+      : v_flex().flex_1().min_h(0).child(this.fileList(t, false)).child(this.diffView(t));
   }
 
-  fileList(t) {
+  fileList(t, side) {
     const repos = this.scope?.repos ?? [], orphans = this.files.filter((f) => f.orphan);
     const rowsCount = repos.reduce((n, r) => n + r.files.length + 1, 0) + (orphans.length ? orphans.length + 1 : 0);
-    const active = this.area === "files";
-    return div().flex_none().h(Math.min(rowsCount * 24 + 12, 240)).min_h(44).relative().border_b(1).border_color(active ? t.accent : t.border)
+    const frame = div().flex_none().relative().border_color(this.area === "files" ? t.accent : t.border);
+    return (side ? frame.w("35%").max_w(320).border_l(1) : frame.h(Math.min(rowsCount * 24 + 12, 240)).min_h(44).border_b(1))
       .child(v_flex().id("files").absolute().inset_0().overflow_y_scroll().p(6)
         .children(repos.map((r) => v_flex()
           .child(h_flex().h(24).px(6).gap(6).items_center().text_size(11)
@@ -480,7 +487,7 @@ export default class Reviewer extends View {
     const width = Math.max(300, ...(diff?.rows ?? []).map((r) => r.text.length * 7 + 110));
     const sel = this.range();
     // overflow_x_scrollbar() wraps its child, so the flex size goes on a plain parent.
-    return v_flex().flex_1().min_h(0).font_family(font).text_size(12)
+    return v_flex().flex_1().min_w(0).min_h(0).font_family(font).text_size(12)
       .when(Boolean(diff?.notice), (e) => e.child(div().p(12).text_color(t.dim).child(diff.notice)))
       .when(Boolean(diff?.cut), (e) => e.child(note(t, "Showing the first 1,500 lines")))
       .child(div().flex_1().min_h(0).relative().child(div().id("diff-x").size_full().overflow_x_scrollbar()
@@ -551,7 +558,7 @@ export default class Reviewer extends View {
     }
     return h_flex().flex_none().h(28).px(12).gap(12).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
       .child(div().flex_1().min_w(0).truncate().text_color(this.error ? t.blocked : this.notice ? t.foreground : t.dim)
-        .child(this.error ?? this.notice ?? "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send"));
+        .child(this.error ?? this.notice ?? "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · l layout"));
   }
 }
 

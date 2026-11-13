@@ -4,7 +4,9 @@
  * at: the anchored row's base-side (HEAD) line; an added row takes the base line it precedes.
  * Edits to the working tree shift new-side numbers but leave the base side fixed.
  * @typedef {{ key: string, mark: string, text: string, at: number }} Anchor
- * @typedef {{ id: string, root: string, path: string, anchors: Anchor[], text: string }} Comment
+ * scope: where the comment was made; its label (as "commit a1b2c3d") goes into the review.
+ * @typedef {{ key: string, label: string | null }} CommentScope
+ * @typedef {{ id: string, root: string, path: string, anchors: Anchor[], text: string, scope?: CommentScope }} Comment
  */
 
 const MARKS = { add: "+", del: "-", ctx: " " };
@@ -111,5 +113,6 @@ function span(comment) {
 function locationLine(comment, stale) {
   const { from, to, removed } = span(comment);
   const range = from === to ? `${from}` : `${from}-${to}`;
-  return `${comment.path}:${range}${removed ? " (removed)" : ""}${stale ? " (lines changed since this comment)" : ""}`;
+  const where = comment.scope?.label ? ` (in ${comment.scope.label})` : "";
+  return `${comment.path}:${range}${where}${removed ? " (removed)" : ""}${stale ? " (lines changed since this comment)" : ""}`;
 }

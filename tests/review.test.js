@@ -198,3 +198,15 @@ test("formatReview orders comments in one file by first line", () => {
     "Code review comments\n\n/r\n\nf.js:5\n      early\nA\n\nf.js:20\n    + late\nB",
   );
 });
+
+test("formatReview names the scope of a comment made outside the uncommitted changes", () => {
+  const anchors = [{ key: "n:4", mark: "+", text: "x" }];
+  const comments = [
+    { id: "a", root: "/r", path: "f.js", anchors, text: "In a commit.", scope: { key: "commits:1:1", label: "commit a1b2c3d" } },
+    { id: "b", root: "/r", path: "g.js", anchors, text: "Uncommitted.", scope: { key: "uncommitted", label: null } },
+  ];
+  assert.equal(
+    formatReview(comments, new Set(["a"])),
+    "Code review comments\n\n/r\n\nf.js:4 (in commit a1b2c3d) (lines changed since this comment)\n    + x\nIn a commit.\n\ng.js:4\n    + x\nUncommitted.",
+  );
+});

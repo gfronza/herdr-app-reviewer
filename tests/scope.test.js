@@ -36,7 +36,6 @@ test("collectScope: folders in order, one group per repo, clean repos omitted", 
   const gone = path.join(home, "gone");
   const scope = await collectScope([home, changed, clean, path.join(changed, "src"), gone], exec, readText);
   assert.deepEqual(scope, {
-    cutFolders: false,
     folders: [
       { folder: home, state: "not-repo" },
       { folder: changed, state: "repo", root: changed },
@@ -55,12 +54,11 @@ test("collectScope: a subfolder alone stands for its whole repo", async () => {
   assert.deepEqual(repos.map((r) => [r.root, r.files.map((f) => f.path)]), [[repo, ["top.txt"]]]);
 });
 
-test("collectScope: keeps the first MAX_FOLDERS folders and says it cut", async () => {
+test("collectScope: reads only the first MAX_FOLDERS folders", async () => {
   const home = tmp("reviewer-many-");
   const folders = Array.from({ length: MAX_FOLDERS + 1 }, (_, i) => path.join(home, `missing-${i}`));
   const scope = await collectScope(folders, exec, readText);
   assert.equal(MAX_FOLDERS, 10);
-  assert.equal(scope.cutFolders, true);
   assert.deepEqual(scope.folders.map((f) => f.folder), folders.slice(0, 10));
   assert.deepEqual(scope.repos, []);
 });

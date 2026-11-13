@@ -4,7 +4,7 @@ import {
   agents, closeOverlay, exec, focused, nextCommand, panes, pickFolder, props, readTextFile, run,
   setShared, settings, shared, theme as herdrTheme, watchFolder, writeTextFile,
 } from "herdr";
-import { collectScope } from "./scope.js";
+import { collectScope, MAX_FOLDERS } from "./scope.js";
 import { fileDiff } from "./git.js";
 import { colorFor, createHighlighter, languageFor } from "./syntax.js";
 import { createComment, formatReview, locate } from "./review.js";
@@ -60,7 +60,7 @@ export default class Reviewer extends View {
     cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
-        if (command === "focus") this.handle.focus();
+        if (command === "focus") (this.box ? this.input : this.handle).focus();
         else this.act(command, cx);
         cx.notify();
       }
@@ -73,16 +73,18 @@ export default class Reviewer extends View {
 
   // ── Loading ────────────────────────────────────────────────────────────
 
+  // A refresh cut off by the script time limit never reaches its finally, so one running
+  // far longer than any real refresh is taken as dead and replaced.
   refresh(cx) {
-    if (this.loading) { this.again = true; return; }
-    this.loading = true;
+    if (this.loadingSince && Date.now() - this.loadingSince < 30000) { this.again = true; return; }
+    this.loadingSince = Date.now();
     cx.spawn(async (cx) => {
       try {
         do {
           this.again = false;
           this.scope = await collectScope(this.folders(), run_exec, readText);
-          this.files = this.scope.repos.flatMap((r) => r.files.map((file) => ({ root: r.root, file })));
-          this.watch(this.scope.repos.map((r) => r.root), cx);
+          this.files = [...this.scope.repos.flatMap((r) => r.files.map((file) => ({ root: r.root, file }))), ...this.orphans()];
+          this.watch([...new Set(this.scope.folders.filter((f) => f.state === "repo").map((f) => f.root))], cx);
           if (!this.files.some((f) => fileKey(f.root, f.file.path) === this.selected)) {
             this.pick(this.files.length ? fileKey(this.files[0].root, this.files[0].file.path) : null);
           }
@@ -90,8 +92,17 @@ export default class Reviewer extends View {
           this.error = null;
         } while (this.again);
       } catch (e) { this.error = String(e); }
-      finally { this.loading = false; cx.notify(); }
+      finally { this.loadingSince = null; cx.notify(); }
     });
+  }
+
+  // Files that left the changes list (reverted or committed) but still hold unsent comments,
+  // kept listed so those comments can be read, edited, and deleted.
+  orphans() {
+    const listed = new Set(this.scope.repos.flatMap((r) => r.files.map((f) => fileKey(r.root, f.path))));
+    const seen = new Set();
+    return this.comments.filter((c) => !listed.has(fileKey(c.root, c.path)) && !seen.has(fileKey(c.root, c.path)) && seen.add(fileKey(c.root, c.path)))
+      .map((c) => ({ root: c.root, orphan: true, file: { path: c.path, status: "·", add: 0, del: 0, untracked: false, binary: false } }));
   }
 
   watch(roots, cx) {
@@ -165,6 +176,7 @@ export default class Reviewer extends View {
 
   addFolder(cx) {
     cx.spawn(async (cx) => {
+      if (this.folders().length >= MAX_FOLDERS) { this.say(`Already watching ${MAX_FOLDERS} folders; remove one first`, cx); return; }
       const folder = await pickFolder({ prompt: "Watch a folder" });
       if (folder && !this.folders().includes(folder)) {
         saveExtraFolders(this.base, [...extraFolders(this.base), folder]);
@@ -182,12 +194,8 @@ export default class Reviewer extends View {
   // ── Comments ───────────────────────────────────────────────────────────
 
   commentAt(row) {
-    if (!this.diff) return null;
-    return this.comments.find((c) => {
-      if (c.root !== this.diff.root || c.path !== this.diff.path) return false;
-      const at = locate(c, this.diff.rows);
-      return at.start <= row && row <= at.end;
-    }) ?? null;
+    const hit = this.layout().placed.find(({ span }) => span.start <= row && row <= span.end);
+    return hit?.c ?? null;
   }
 
   openBox(cx, comment = null) {
@@ -196,7 +204,8 @@ export default class Reviewer extends View {
     else {
       const { from, to } = this.range() ?? { from: this.cursor, to: this.cursor };
       if (!this.diff.rows.slice(from, to + 1).some((r) => r.kind !== "hunk")) return;
-      this.box = { from, to };
+      // Anchored now, so a refresh while the box is open cannot move the comment to other lines.
+      this.box = { draft: createComment({ id: 0, root: this.diff.root, path: this.diff.path, rows: this.diff.rows, from, to, text: "" }) };
     }
     this.input.set_value(comment?.text ?? "");
     this.input.focus();
@@ -207,11 +216,7 @@ export default class Reviewer extends View {
     const text = this.input.value().trim();
     if (!this.box || !text) return;
     if (this.box.id) this.comments = this.comments.map((c) => c.id === this.box.id ? { ...c, text } : c);
-    else {
-      this.comments = [...this.comments, createComment({
-        id: this.nextId++, root: this.diff.root, path: this.diff.path, rows: this.diff.rows, from: this.box.from, to: this.box.to, text,
-      })];
-    }
+    else this.comments = [...this.comments, { ...this.box.draft, id: this.nextId++, text }];
     this.closeBox(cx);
   }
 
@@ -330,7 +335,7 @@ export default class Reviewer extends View {
       selected: this.selected?.replace("\0", ":"), area: this.area, cursor: this.cursor, sel: this.range(), box: this.box,
       diff: this.diff && { path: this.diff.path, notice: this.diff.notice, cut: this.diff.cut, rows: this.diff.rows.length },
       colored: this.diff ? this.diff.rows.filter((_, i) => this.hl?.runs(i)).length : 0,
-      comments: this.comments, items: this.items().filter((it) => it.comment).map((it) => ({ id: it.comment.id, text: it.text, stale: it.stale })),
+      comments: this.comments, items: this.layout().items.filter((it) => it.comment).map((it) => ({ id: it.comment.id, text: it.text, stale: it.stale })),
       picking: this.picking, notice: this.notice, error: this.error, view: this.view,
     };
     writeTextFile(`${path}-${Date.now()}.json`, JSON.stringify(state, null, 1), null);
@@ -359,80 +364,87 @@ export default class Reviewer extends View {
   }
 
   reveal() {
-    const item = this.items().findIndex((it) => it.row === this.cursor);
+    const item = this.layout().items.findIndex((it) => it.row === this.cursor);
     if (item >= 0) this.scroll.scroll_to_item(item);
   }
 
   // ── Rendering ──────────────────────────────────────────────────────────
 
-  // Diff rows, with each comment's text as extra rows under its last line.
-  items() {
-    if (!this.diff) return [];
-    const here = this.comments.filter((c) => c.root === this.diff.root && c.path === this.diff.path)
-      .map((c) => ({ c, at: locate(c, this.diff.rows) }));
-    const after = new Map();
-    for (const h of here) after.set(h.at.end, [...(after.get(h.at.end) ?? []), h]);
+  // Diff rows, with each comment's text as extra rows under its last line. Each comment is
+  // located once here: locating per drawn row ran past the script time limit with many comments.
+  // A comment whose lines are gone sits above the first row, and the first row reaches it.
+  layout() {
+    if (!this.diff) return { items: [], placed: [], commented: new Set() };
+    const placed = this.comments.filter((c) => c.root === this.diff.root && c.path === this.diff.path).map((c) => {
+      const at = locate(c, this.diff.rows);
+      return { c, stale: at.stale, end: at.end, span: at.start < 0 ? { start: 0, end: 0 } : at };
+    });
+    const after = new Map(), commented = new Set();
+    for (const p of placed) {
+      after.set(p.end, [...(after.get(p.end) ?? []), p]);
+      if (p.end >= 0) for (let i = p.span.start; i <= p.span.end; i++) commented.add(i);
+    }
     const items = [];
     const commentRows = (list) => {
-      for (const { c, at } of list) {
-        const lines = c.text.split("\n");
-        lines.forEach((line, i) => items.push({ comment: c, stale: at.stale, text: line, first: i === 0 }));
+      for (const { c, stale } of list) {
+        c.text.split("\n").forEach((line, i) => items.push({ comment: c, stale, text: line, first: i === 0 }));
       }
     };
     commentRows(after.get(-1) ?? []);
-    this.diff.rows.forEach((row, i) => { items.push({ row: i }); commentRows(after.get(i) ?? []); });
-    return items;
+    this.diff.rows.forEach((_, i) => { items.push({ row: i }); commentRows(after.get(i) ?? []); });
+    return { items, placed, commented };
   }
 
-  render(cx) {
+  render(_cx) {
     if (props()?.overlay) return div();
     const t = theme();
     return v_flex().id("reviewer").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
       .track_focus(this.handle).on_mouse_down("left", () => this.handle.focus())
       .on_key_down((e, cx) => this.onKey(e, cx))
-      .child(this.header(t, cx))
-      .child(this.view === "folders" ? this.foldersView(t, cx) : this.changesView(t, cx))
-      .child(this.footer(t, cx));
+      .child(this.header(t))
+      .child(this.view === "folders" ? this.foldersView(t) : this.changesView(t))
+      .child(this.footer(t));
   }
 
-  header(t, cx) {
+  header(t) {
     const unsent = this.comments.length;
     return h_flex().h(36).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
       .child(div().font_semibold().child("Reviewer"))
       .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(this.base ?? "No folder"))
       .when(unsent > 0, (e) => e.child(div().px(6).rounded(4).bg(t.accent).text_color(t.accent_foreground).text_size(11).child(`${unsent} unsent`)))
-      .child(button(t, "folders", this.view === "folders" ? "Changes" : "Folders", () => { this.view = this.view === "folders" ? "changes" : "folders"; cx.notify(); }));
+      .child(button(t, "folders", this.view === "folders" ? "Changes" : "Folders", (cx) => { this.view = this.view === "folders" ? "changes" : "folders"; cx.notify(); }));
   }
 
-  foldersView(t, cx) {
-    const states = this.scope?.folders ?? this.folders().map((folder) => ({ folder, state: "repo" }));
-    const label = (f) => f.state === "missing" ? "missing" : f.state === "not-repo" ? "not a git repository" : f.root === f.folder ? "" : `in ${f.root}`;
+  foldersView(t) {
+    const states = this.folders().map((folder, i) => this.scope?.folders.find((f) => f.folder === folder)
+      ?? { folder, state: i < MAX_FOLDERS ? "loading" : "over-limit" });
+    const label = (f) => ({ missing: "missing", "not-repo": "not a git repository", loading: "", "over-limit": `not watched: the limit is ${MAX_FOLDERS}` })[f.state]
+      ?? (f.root === f.folder ? "" : `in ${f.root}`);
     return v_flex().flex_1().min_h(0).p(8).gap(2).overflow_y_scrollbar()
       .children(states.map((f, i) => h_flex().id(`folder-${i}`).h(28).flex_none().px(8).gap(8).items_center().rounded(6).hover((s) => s.bg(t.hover))
         .child(div().flex_1().min_w(0).truncate().child(f.folder))
         .child(div().text_size(11).text_color(f.state === "repo" ? t.dim : t.blocked).child(label(f)))
         .child(f.folder === this.base
           ? div().w(60).text_size(11).text_color(t.dim).child("base")
-          : button(t, `remove-${i}`, "Remove", () => this.removeFolder(f.folder, cx)))))
-      .when(Boolean(this.scope?.cutFolders), (e) => e.child(note(t, "Watching the first 10 folders")))
-      .child(h_flex().pt(6).child(button(t, "add-folder", "Add folder", () => this.addFolder(cx))));
+          : button(t, `remove-${i}`, "Remove", (cx) => this.removeFolder(f.folder, cx)))))
+      .child(h_flex().pt(6).child(button(t, "add-folder", "Add folder", (cx) => this.addFolder(cx))));
   }
 
-  changesView(t, cx) {
+  changesView(t) {
     const noRepo = this.scope && !this.scope.folders.some((f) => f.state === "repo");
     if (noRepo) {
       return v_flex().flex_1().p(16).gap(10)
         .child(div().text_color(t.muted).child("No git repository here. Add a folder that holds one."))
-        .child(h_flex().child(button(t, "add-folder-empty", "Add folder", () => this.addFolder(cx))));
+        .child(h_flex().child(button(t, "add-folder-empty", "Add folder", (cx) => this.addFolder(cx))));
     }
     return v_flex().flex_1().min_h(0)
-      .child(this.fileList(t, cx))
-      .child(this.diffView(t, cx));
+      .child(this.fileList(t))
+      .child(this.diffView(t));
   }
 
-  fileList(t, cx) {
-    const repos = this.scope?.repos ?? [];
-    const rowsCount = repos.reduce((n, r) => n + r.files.length + 1, 0);
+  fileList(t) {
+    const repos = this.scope?.repos ?? [], orphans = this.files.filter((f) => f.orphan);
+    const rowsCount = repos.reduce((n, r) => n + r.files.length + 1, 0) + (orphans.length ? orphans.length + 1 : 0);
     const active = this.area === "files";
     return div().flex_none().h(Math.min(rowsCount * 24 + 12, 240)).min_h(44).relative().border_b(1).border_color(active ? t.accent : t.border)
       .child(v_flex().id("files").absolute().inset_0().overflow_y_scroll().p(6)
@@ -440,18 +452,21 @@ export default class Reviewer extends View {
           .child(h_flex().h(24).px(6).gap(6).items_center().text_size(11)
             .child(div().font_semibold().child(r.root.split("/").pop()))
             .child(div().min_w(0).truncate().text_color(t.dim).child(r.root)))
-          .children(r.files.map((file) => this.fileRow(t, r.root, file, cx)))
+          .children(r.files.map((file) => this.fileRow(t, r.root, file)))
           .when(r.cut, (e) => e.child(note(t, "Showing the first 1,000 changed files")))))
-        .when(!repos.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error ?? (this.loading || !this.scope ? "Loading changes…" : "No uncommitted changes")))))
+        .when(orphans.length > 0, (e) => e.child(v_flex()
+          .child(h_flex().h(24).px(6).items_center().text_size(11).font_semibold().child("No longer changed, with comments"))
+          .children(orphans.map((o) => this.fileRow(t, o.root, o.file)))))
+        .when(!repos.length && !orphans.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error ?? (this.loadingSince || !this.scope ? "Loading changes…" : "No uncommitted changes")))))
       .child(Scrollbar.vertical("files").absolute().inset_0());
   }
 
-  fileRow(t, root, file, cx) {
+  fileRow(t, root, file) {
     const key = fileKey(root, file.path), parts = file.path.split("/"), name = parts.pop();
-    const color = file.status === "A" ? t.ansi2 : file.status === "M" ? t.blocked : t.ansi1;
+    const color = file.status === "A" ? t.ansi2 : file.status === "M" ? t.blocked : file.status === "·" ? t.dim : t.ansi1;
     return h_flex().id(`file-${key}`).h(24).flex_none().px(8).gap(8).items_center().rounded(6).cursor_pointer()
       .when(this.selected === key, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
-      .on_click((_e, cx) => { this.area = "files"; this.select({ root, file }, cx); })
+      .on_click((_e, cx) => { this.area = "files"; this.select(this.files.find((f) => f.root === root && f.file.path === file.path), cx); })
       .child(div().w(12).text_size(11).text_color(color).child(file.status))
       .child(h_flex().flex_1().min_w(0)
         .child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : ""))
@@ -460,8 +475,8 @@ export default class Reviewer extends View {
       .when(file.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${file.del}`)));
   }
 
-  diffView(t, cx) {
-    const diff = this.diff, items = this.items(), font = String(settings().font_family ?? "JetBrains Mono");
+  diffView(t) {
+    const diff = this.diff, { items, commented } = this.layout(), font = String(settings().font_family ?? "JetBrains Mono");
     const width = Math.max(300, ...(diff?.rows ?? []).map((r) => r.text.length * 7 + 110));
     const sel = this.range();
     // overflow_x_scrollbar() wraps its child, so the flex size goes on a plain parent.
@@ -473,7 +488,7 @@ export default class Reviewer extends View {
           .child(v_virtual_list("diff", items.length, ROW, (i) => items[i].row !== undefined ? `r${items[i].row}` : `c${items[i].comment.id}-${i}`,
             (range) => {
               this.visible = rowRange(items, range);
-              return items.slice(range.start, range.end).map((it) => it.comment ? this.commentRow(t, it) : this.diffRow(t, diff.rows[it.row], it.row, sel));
+              return items.slice(range.start, range.end).map((it) => it.comment ? this.commentRow(t, it) : this.diffRow(t, diff.rows[it.row], it.row, sel, commented.has(it.row)));
             }).track_scroll(this.scroll).on_item_click((key, cx) => this.clickRow(key, cx)).size_full())))
         .child(Scrollbar.vertical("diff").viewport_from_layout().absolute().inset_0()))
       .when(!diff && this.files.length > 0, (e) => e.child(div().px(12).py(6).text_color(t.dim).child("Select a file to view its changes")));
@@ -486,14 +501,13 @@ export default class Reviewer extends View {
     cx.notify();
   }
 
-  diffRow(t, row, i, sel) {
+  diffRow(t, row, i, sel, commented) {
     if (row.kind === "hunk") {
       return h_flex().id(`row-${i}`).w_full().h(ROW).flex_none().px(12).bg(t.raised).text_color(t.dim)
         .when(this.area === "diff" && this.cursor === i, (e) => e.bg(t.selected))
         .child(div().truncate().child(row.text));
     }
     const runs = this.hl?.runs(i) ?? [{ text: row.text, scope: null }];
-    const commented = Boolean(this.commentAt(i));
     const bg = this.area === "diff" && this.cursor === i ? t.selected
       : sel && sel.from <= i && i <= sel.to ? t.selection
       : row.kind === "add" ? t.ansi2 + "18" : row.kind === "del" ? t.ansi1 + "18" : null;
@@ -516,16 +530,18 @@ export default class Reviewer extends View {
       .when(it.first && it.stale, (e) => e.child(div().text_size(11).text_color(t.blocked).child("stale: lines changed")));
   }
 
-  footer(t, cx) {
+  footer(t) {
     if (this.box) {
-      const label = this.box.id ? "Edit comment" : `Comment on ${this.diff?.path ?? ""}`;
+      const label = this.box.draft ? `Comment on ${this.box.draft.path}` : "Edit comment";
       return v_flex().flex_none().p(8).gap(6).border_t(1).border_color(t.border)
         .child(div().text_size(11).text_color(t.muted).child(label))
-        .child(div().h(30).px(8).flex().items_center().rounded(6).border_1().border_color(t.accent)
+        // The root takes the keyboard back on a press, so a press in the box stops there.
+        .child(div().id("comment-box").h(30).px(8).flex().items_center().rounded(6).border_1().border_color(t.accent)
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground)));
     }
     if (this.picking) {
-      const list = this.picking.map((address) => agents().find((a) => a.address === address)).filter(Boolean);
+      const list = this.picking.map((address) => agents().find((a) => a.address === address) ?? { address, app: null, title: "", status: "gone" });
       return v_flex().flex_none().p(8).gap(4).border_t(1).border_color(t.border)
         .child(div().text_size(11).text_color(t.muted).child("Send to which agent? Press its number, or Esc to cancel"))
         .children(list.map((a, i) => h_flex().id(`agent-${a.address}`).h(26).px(8).gap(8).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
@@ -547,7 +563,7 @@ function rowRange(items, range) {
 
 function button(t, id, label, onClick) {
   return div().id(id).h(24).px(10).flex().items_center().rounded(6).border_1().border_color(t.border).text_size(11).cursor_pointer()
-    .hover((s) => s.bg(t.hover)).on_click(() => onClick()).child(label);
+    .hover((s) => s.bg(t.hover)).on_click((_e, cx) => onClick(cx)).child(label);
 }
 
 function note(t, text) {

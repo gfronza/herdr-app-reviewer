@@ -9,7 +9,7 @@ import { fileDiff } from "./git.js";
 import { colorFor, createHighlighter, languageFor } from "./syntax.js";
 import { createComment, formatReview, locate } from "./review.js";
 import { moveLine, nextChange, nextFile, selectionRange } from "./nav.js";
-import { commitOf, defaultBase, listBranches, listCommits } from "./revs.js";
+import { commitOf, defaultBase, listBranches, listCommits, orderRun } from "./revs.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
@@ -101,13 +101,21 @@ export default class Reviewer extends View {
     return { kind: "uncommitted" };
   }
 
-  // Comments belong to the scope they were made in and show only there.
-  scopeKey() {
-    return this.scopeKind === "commits" ? `commits:${this.commitPick.first}:${this.commitPick.last}` : this.scopeKind;
+  // Comments belong to the scope they were made in and show only there: in the branch scope, to
+  // the repo's base; in the commits scope, to the repo and its run. Read from the loaded scope.
+  keyFor(root) {
+    const s = this.spec;
+    if (s.kind === "branch") return `branch:${this.scope.repos.find((r) => r.root === root)?.base}`;
+    if (s.kind === "commits") return `commits:${s.root}:${s.first}:${s.last}`;
+    return "uncommitted";
   }
 
+  // Until the new scope loads, nothing from the old one is shown, so nothing can be commented
+  // on under the wrong scope.
   setScope(kind, cx) {
     this.scopeKind = kind; this.sel = null;
+    this.scope = null; this.spec = null; this.files = [];
+    this.pick(this.selected);
     this.refresh(cx);
   }
 
@@ -122,7 +130,11 @@ export default class Reviewer extends View {
       try {
         do {
           this.again = false;
-          this.scope = await collectScope(this.folders(), this.scopeSpec(), run_exec, readText);
+          const spec = this.scopeSpec();
+          const scope = await collectScope(this.folders(), spec, run_exec, readText);
+          // The scope or a base changed while this pass ran: its result belongs to neither.
+          if (JSON.stringify(spec) !== JSON.stringify(this.scopeSpec())) { this.again = true; continue; }
+          this.scope = scope; this.spec = spec;
           this.files = [...this.scope.repos.flatMap((r) => r.files.map((file) => ({ root: r.root, range: r.range, file }))), ...this.orphans()];
           this.watch([...new Set(this.scope.folders.filter((f) => f.state === "repo").map((f) => f.root))], cx);
           if (!this.files.some((f) => fileKey(f.root, f.file.path) === this.selected)) {
@@ -140,8 +152,8 @@ export default class Reviewer extends View {
   // kept listed so those comments can be read, edited, and deleted.
   orphans() {
     const listed = new Set(this.scope.repos.flatMap((r) => r.files.map((f) => fileKey(r.root, f.path))));
-    const seen = new Set(), key = this.scopeKey();
-    return this.comments.filter((c) => c.scope.key === key && !listed.has(fileKey(c.root, c.path)) && !seen.has(fileKey(c.root, c.path)) && seen.add(fileKey(c.root, c.path)))
+    const seen = new Set();
+    return this.comments.filter((c) => c.scope.key === this.keyFor(c.root) && !listed.has(fileKey(c.root, c.path)) && !seen.has(fileKey(c.root, c.path)) && seen.add(fileKey(c.root, c.path)))
       .map((c) => ({
         root: c.root, orphan: true, range: this.scope.repos.find((r) => r.root === c.root)?.range ?? c.scope.range,
         file: { path: c.path, status: "·", add: 0, del: 0, untracked: false, binary: false },
@@ -168,9 +180,12 @@ export default class Reviewer extends View {
   async loadDiff(cx) {
     const entry = this.files.find((f) => fileKey(f.root, f.file.path) === this.selected);
     if (!entry) { this.setDiff(null, cx); return; }
+    const spec = this.spec;
     const result = await fileDiff(entry.root, entry.file, run_exec, readText, entry.range);
-    if (this.selected !== fileKey(entry.root, entry.file.path)) return;
-    this.setDiff({ key: this.selected, root: entry.root, path: entry.file.path, range: entry.range, untracked: entry.file.untracked, ...result }, cx);
+    if (this.selected !== fileKey(entry.root, entry.file.path) || this.spec !== spec) return;
+    const label = this.scope.repos.find((r) => r.root === entry.root)?.label ?? null;
+    const scope = { key: this.keyFor(entry.root), label, range: entry.range };
+    this.setDiff({ key: this.selected, root: entry.root, path: entry.file.path, scope, untracked: entry.file.untracked, ...result }, cx);
     this.cursor = moveLine(this.diff.rows, this.cursor, 0);
   }
 
@@ -249,8 +264,7 @@ export default class Reviewer extends View {
       if (!this.diff.rows.slice(from, to + 1).some((r) => r.kind !== "hunk")) return;
       // Anchored now, so a refresh while the box is open cannot move the comment to other lines.
       const draft = createComment({ id: 0, root: this.diff.root, path: this.diff.path, rows: this.diff.rows, from, to, text: "" });
-      const label = this.scope?.repos.find((r) => r.root === this.diff.root)?.label ?? null;
-      this.box = { draft: { ...draft, untracked: this.diff.untracked, scope: { key: this.scopeKey(), label, range: this.diff.range } } };
+      this.box = { draft: { ...draft, untracked: this.diff.untracked, scope: this.diff.scope } };
     }
     this.input.set_value(comment?.text ?? "");
     this.input.focus();
@@ -281,14 +295,14 @@ export default class Reviewer extends View {
   // Every commented file is read again in its comment's scope, so a comment whose lines changed
   // is marked stale in the review. A range whose commits are gone has no lines left to match.
   async review() {
-    const stale = new Set(), byFile = new Map(), key = this.scopeKey();
+    const stale = new Set(), byFile = new Map();
     for (const c of this.comments) {
       const k = `${c.scope.key}\0${fileKey(c.root, c.path)}`;
       byFile.set(k, [...(byFile.get(k) ?? []), c]);
     }
     for (const list of byFile.values()) {
       const { root, path, scope, untracked } = list[0];
-      const entry = scope.key === key ? this.files.find((f) => f.root === root && f.file.path === path) : null;
+      const entry = this.spec && scope.key === this.keyFor(root) ? this.files.find((f) => f.root === root && f.file.path === path) : null;
       const file = entry?.file ?? { path, untracked };
       const rows = (await fileDiff(root, file, run_exec, readText, entry ? entry.range : scope.range).catch(() => ({ rows: [] }))).rows;
       for (const c of list) if (locate(c, rows).stale) stale.add(c.id);
@@ -332,8 +346,9 @@ export default class Reviewer extends View {
   // ── Base and commit pickers ────────────────────────────────────────────
 
   openChooser(chooser, load, cx) {
+    if (this.box) { this.say("Save or cancel the comment first", cx); return; }
     const c = { ...chooser, items: null, at: 0, mark: null };
-    this.chooser = c; this.box = null; this.picking = null; this.query = "";
+    this.chooser = c; this.picking = null; this.notice = null; this.query = "";
     this.filter.set_value("");
     this.filter.focus();
     cx.spawn(async (cx) => {
@@ -367,13 +382,13 @@ export default class Reviewer extends View {
     }, cx);
   }
 
-  // Commits from every watched repo, newest first; `n` keeps each one's place in its own repo's log.
+  // Commits from every watched repo, newest first.
   openCommitPicker(cx) {
     const roots = this.watchedRoots();
     if (!roots.length) { this.say("No repository to pick commits from", cx); return; }
     this.openChooser({ kind: "commits", several: roots.length > 1 }, async () => {
       const logs = await Promise.all(roots.map((root) => listCommits(root, run_exec)));
-      return { items: logs.flatMap((log) => log.map((commit, n) => ({ ...commit, n }))).sort((a, b) => b.time - a.time) };
+      return { items: logs.flat().sort((a, b) => b.time - a.time) };
     }, cx);
   }
 
@@ -396,11 +411,15 @@ export default class Reviewer extends View {
     if (c.kind === "base") { this.chooseBase(c, row.typed ?? row.name, cx); return; }
     if (shift) { c.mark = row; this.say(`Run starts at ${row.short}; press Enter on its other end`, cx); return; }
     if (c.mark && c.mark.root !== row.root) { this.say("A run stays in one repo; pick its other end there", cx); return; }
-    const end = c.mark ?? row, [older, newer] = end.n > row.n ? [end, row] : [row, end];
-    this.commitPick = { root: row.root, first: older.sha, last: newer.sha };
-    this.notice = null;
-    this.closeChooser(cx);
-    this.setScope("commits", cx);
+    cx.spawn(async (cx) => {
+      const run = await orderRun(row.root, (c.mark ?? row).sha, row.sha, run_exec);
+      if (this.chooser !== c) return;
+      if (!run) { this.say("Neither commit comes after the other; pick a run on one line of history", cx); return; }
+      this.commitPick = { root: row.root, first: run[0], last: run[1] };
+      this.notice = null;
+      this.closeChooser(cx);
+      this.setScope("commits", cx);
+    });
   }
 
   chooseBase(c, name, cx) {
@@ -490,7 +509,7 @@ export default class Reviewer extends View {
       colored: this.diff ? this.diff.rows.filter((_, i) => this.hl?.runs(i)).length : 0,
       comments: this.comments, items: this.layout().items.filter((it) => it.comment).map((it) => ({ id: it.comment.id, text: it.text, stale: it.stale })),
       picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked",
-      scope: this.scopeKey(), labels: this.scope?.repos?.map((r) => ({ root: r.root, label: r.label, missing: r.missing, problem: r.problem })),
+      scope: this.scopeKind, spec: this.spec, labels: this.scope?.repos?.map((r) => ({ root: r.root, label: r.label, missing: r.missing, problem: r.problem })),
       chooser: this.chooser && {
         kind: this.chooser.kind, root: this.chooser.root, at: this.chooser.at, mark: this.chooser.mark?.short ?? null,
         rows: this.chooserRows().map((r) => r.typed ?? r.name ?? `${repoName(r.root)} ${r.short} ${r.subject}`),
@@ -533,8 +552,7 @@ export default class Reviewer extends View {
   // A comment whose lines are gone sits above the first row, and the first row reaches it.
   layout() {
     if (!this.diff) return { items: [], placed: [], commented: new Set() };
-    const key = this.scopeKey();
-    const placed = this.comments.filter((c) => c.scope.key === key && c.root === this.diff.root && c.path === this.diff.path).map((c) => {
+    const placed = this.comments.filter((c) => c.scope.key === this.diff.scope.key && c.root === this.diff.root && c.path === this.diff.path).map((c) => {
       const at = locate(c, this.diff.rows);
       return { c, stale: at.stale, end: at.end, span: at.start < 0 ? { start: 0, end: 0 } : at };
     });
@@ -736,10 +754,11 @@ export default class Reviewer extends View {
         .on_click((e, cx) => { c.at = start + i; this.choose(e.modifiers.shift, cx); })
         .children(body);
     };
-    return v_flex().flex_none().p(8).gap(4).border_t(1).border_color(t.border)
+    // The root takes the keyboard back on a press; stopping it here keeps typing and Enter in the filter.
+    return v_flex().id("chooser").flex_none().p(8).gap(4).border_t(1).border_color(t.border)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .child(div().text_size(11).text_color(this.notice ? t.foreground : t.muted).child(this.notice ?? title))
       .child(div().id("chooser-box").h(30).px(8).flex().items_center().rounded(6).border_1().border_color(t.accent)
-        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
         .child(Input.new(this.filter).h_full().text_size(12).text_color(t.foreground)))
       .when(!c.items, (e) => e.child(note(t, "Loading…")))
       .when(Boolean(c.items) && !rows.length, (e) => e.child(note(t, "No matches")))

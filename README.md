@@ -2,7 +2,7 @@
 
 A code-review pane for [Herdr App](https://herdr.dev). It shows the changes in a folder and in
 any other folders you add, as a unified diff with syntax colors: uncommitted changes, everything
-on the branch, or chosen commits. You comment on lines, then copy the comments or place them in
+on the branch, what the agent's last turn changed, or chosen commits. You comment on lines, then copy the comments or place them in
 an agent's input for it to act on.
 
 It is inspired by [herdr-reviewr](https://github.com/persiyanov/herdr-reviewr), the review plugin for the Herdr TUI, and
@@ -33,7 +33,7 @@ git-ignored ones. Changes are grouped by repo; click a repo's name to collapse o
 files, and `f`/`F` skip the files of a collapsed repo. Select a file to see its diff. The list and the
 open diff update when files change on disk.
 
-**Scopes.** The buttons under the header, or `u`, `b`, and `g`, choose what the pane diffs:
+**Scopes.** The buttons under the header, or `u`, `b`, `t`, and `g`, choose what the pane diffs:
 
 - **Uncommitted** (`u`), the default: changes since the last commit.
 - **Branch** (`b`): everything since the branch left its base, commits and uncommitted changes
@@ -42,11 +42,19 @@ open diff update when files change on disk.
   `init.defaultBranch`, `main`, or `master`; always a local branch. To pick another, press `B` or
   click the base name. Type to filter the branches, or type any revision, like `HEAD~2` or a tag.
   The pick is kept per repo across restarts; picking the default clears it.
+- **Last turn** (`t`): what the agent's latest turn changed, across every watched repo, commits
+  made during the turn included. A turn starts when the agents in the reviewer's tab go from idle
+  to working; the pane then saves a snapshot of each watched repo and diffs against it. A turn that
+  changes nothing leaves the previous one on screen. The pane sees only turns that start while it
+  is open.
 - **Commits** (`g`): one commit or a run of commits, in one repo. `G` lists recent commits from
   every watched repo. Enter picks one. For a run, press Shift+Enter on one end, then Enter on the
   other; one end must come after the other in history. `g` returns to the last pick.
 
 Every reviewer opens on Uncommitted.
+
+**This session only.** The **This session** button, or `o`, narrows any scope to the files the
+agent's turns changed since the pane opened. Edits made between turns are left out. Off by default.
 
 **More folders.** Select **Folders** to see the watched folders. **Add folder** opens the system
 folder picker. A folder inside a repo you already watch adds nothing new; the repo shows once.
@@ -55,7 +63,7 @@ base folder, so it comes back the next time a reviewer opens on that folder.
 
 **Comments.** Move to a line and press `c`, or select lines with `v` first. Type the comment and
 press Enter. A comment belongs to the scope it was made in and shows only there: in Branch, to the
-repo's base at the time; in Commits, to that repo and run. A comment whose
+repo's base at the time; in Commits, to that repo and run; in Last turn, to that turn. A comment whose
 lines change on disk is kept and marked stale. If a commented
 file stops changing (reverted or committed), it stays listed under "No longer changed, with
 comments" until you send or delete its comments.
@@ -79,7 +87,8 @@ several agents in the tab, a picker asks which one. Sending clears the comments.
 | `y` | Copy the review |
 | `s` | Send the review |
 | `l` | Switch between stacked and side-by-side layout (kept for every reviewer, across restarts) |
-| `u` / `b` / `g` | Scope: uncommitted / branch / commits |
+| `u` / `b` / `t` / `g` | Scope: uncommitted / branch / last turn / commits |
+| `o` | Show only this session's files, or all files |
 | `B` / `G` | Pick the base branch / pick commits |
 | `Esc` | Clear the selection, or cancel the comment box or a picker |
 | `Enter` | Save the comment box, or choose in a picker |
@@ -94,7 +103,8 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 `reviewer.next-file`, `reviewer.prev-file`, `reviewer.switch-area`, `reviewer.select`,
 `reviewer.comment`, `reviewer.edit`, `reviewer.delete`, `reviewer.copy`, `reviewer.send`,
 `reviewer.layout`, `reviewer.cancel`, `reviewer.scope-uncommitted`, `reviewer.scope-branch`,
-`reviewer.scope-commits`, `reviewer.pick-base`, `reviewer.pick-commits`, and
+`reviewer.scope-turn`, `reviewer.scope-commits`, `reviewer.session-only`, `reviewer.pick-base`,
+`reviewer.pick-commits`, and
 `reviewer.toggle-repo` (collapses or expands the selected file's repo; no key by default).
 
 ## What it runs and reads
@@ -103,6 +113,13 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
   `merge-base`, `log`, `for-each-ref`, and `config` (to read `init.defaultBranch`), with
   `--no-optional-locks` and settings that keep git from writing the index. It never stages,
   commits, or changes a file, the index, or a ref.
+- For Last turn and This session, it snapshots each watched repo when a turn starts: it copies the
+  repo's index into a temp folder and runs `git add -A` and `git write-tree` there, with
+  `GIT_INDEX_FILE` and `GIT_OBJECT_DIRECTORY` pointing at that folder. Nothing is written inside
+  the repo. Each pane keeps one folder, `herdr-reviewer-<tab id>` in `$TMPDIR`, holding the latest
+  turn and any turn that unsent comments were made in. It runs `sh`, `cp`, `find`, `mkdir`, and
+  `rm` on that folder only.
+- It reads the status of the agents in its tab.
 - It reads files outside its own folder: the files in the folders you watch, to show untracked
   files and count their lines.
 - It watches those repos for changes on disk.
@@ -114,6 +131,13 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 - Parallel sessions in the same base folder share one watch list.
 - Local machine only: spaces on other machines are not supported.
 - Unsent comments are lost when the pane closes.
+- Last turn and This session see only turns that start while the pane is open, and they count
+  every change in the watched repos during a turn, including changes from other programs or
+  sessions. If a file changes just as a turn starts, that turn shows nothing and says why; This
+  session may then miss that file.
+- A closed pane leaves its last turn's snapshot in its temp folder until the system cleans it up.
+- Repos with git's split index on (`core.splitIndex`) have no Last turn: reading a split index
+  would change a file under `.git`.
 - Sending replaces the clipboard contents.
 - Tested on macOS only; Linux and Windows are untested.
 - Files over 1 MiB, and untracked files that are not UTF-8 text, are listed but their contents
@@ -126,8 +150,6 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 
 Planned next, in this order. Plans may change.
 
-- **v1.2, follow the agent:** only what the agent's latest turn changed, across watched repos;
-  a switch to show only this session's changes.
 - **v1.3, reading comfort:** old and new code side by side in the diff; rendered Markdown; find
   in file; search files by name and code by content.
 - **v1.4, durability and reach:** unsent comments that survive closing the pane; Linux and

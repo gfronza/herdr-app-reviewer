@@ -88,13 +88,22 @@ async function mapInWaves(items, fn) {
   return out;
 }
 
-/** Commit ids; a null `to` is the working tree. @typedef {{ from: string, to: string | null }} Range */
+/**
+ * Commit or tree ids; a null `to` is the working tree. `objects` is a private object folder that
+ * holds the trees of a turn snapshot.
+ * @typedef {{ from: string, to: string | null, objects?: string }} Range
+ */
+
+// git reads an alternate object folder but never writes to it. Quoted, since the list splits on ":".
+export const alternates = (dir) => `GIT_ALTERNATE_OBJECT_DIRECTORIES="${dir.replace(/[\\"]/g, "\\$&")}"`;
+const withObjects = (exec, range) => (range?.objects ? (cmd, args, opts) => exec("env", [alternates(range.objects), cmd, ...args], opts) : exec);
 
 /**
  * Without a range, every uncommitted change; with one, the diff across that range.
  * @param {Range} [range]
  */
 export async function listChanges(root, exec, readText, range) {
+  exec = withObjects(exec, range);
   const head = range ? true : await hasHead(root, exec);
   const [codes, stats] = await Promise.all([
     range ? readRangeStatus(root, range, exec) : readStatus(root, exec),
@@ -164,6 +173,7 @@ function parseDiff(out) {
 
 /** @param {Range} [range] */
 export async function fileDiff(root, file, exec, readText, range) {
+  exec = withObjects(exec, range);
   if (file.untracked || (!range && !(await hasHead(root, exec)))) {
     const text = await readText(`${root}/${file.path}`);
     if (text === null) return UNREADABLE;

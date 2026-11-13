@@ -11,4 +11,6 @@ for mod in mods/*/; do
   node_modules/.bin/tsc -p "${mod}jsconfig.json"
 done
 
+# A git hook inherits these (`commit -a` sets GIT_INDEX_FILE); the tests' git calls would hit this repo.
+unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE
 node --test

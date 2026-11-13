@@ -63,16 +63,25 @@ async function newFile(root, path, xy, readText) {
   return { path, status: statusOf(xy), add: binary ? 0 : lineCount(text), del: 0, untracked: xy === "??", binary };
 }
 
+// The app rejects a mod's host call once 1024 are outstanding, so reads go in small waves.
+const READS_AT_ONCE = 32;
+
+async function mapInWaves(items, fn) {
+  const out = [];
+  for (let i = 0; i < items.length; i += READS_AT_ONCE) out.push(...(await Promise.all(items.slice(i, i + READS_AT_ONCE).map(fn))));
+  return out;
+}
+
 export async function listChanges(root, exec, readText) {
   const head = await hasHead(root, exec);
   const [codes, stats] = await Promise.all([readStatus(root, exec), head ? readNumstat(root, exec) : new Map()]);
   const paths = [...codes.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  const files = await Promise.all(paths.slice(0, MAX_FILES).map((path) => {
+  const files = await mapInWaves(paths.slice(0, MAX_FILES), (path) => {
     const xy = codes.get(path);
     if (xy === "??" || !head) return newFile(root, path, xy, readText);
     const { add, del, binary } = stats.get(path) ?? { add: 0, del: 0, binary: false };
     return { path, status: statusOf(xy), add, del, untracked: false, binary };
-  }));
+  });
   return { files, cut: paths.length > MAX_FILES };
 }
 

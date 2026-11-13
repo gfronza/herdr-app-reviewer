@@ -289,3 +289,19 @@ test("fileDiff: long lines without tabs are read in linear time", async () => {
   assert.equal(rows.length, 601);
   assert.ok(Date.now() - started < 1500, `took ${Date.now() - started} ms`);
 });
+
+// The app rejects a mod's host call once 1024 are outstanding, so file reads must not all start at once.
+test("listChanges keeps its outstanding file reads well under the app's host call limit", async () => {
+  const root = makeRepo({ "seed.txt": "x\n" });
+  for (let i = 0; i < 1100; i++) write(root, `many/f${i}.txt`, `${i}\n`);
+  let open = 0, most = 0;
+  const limitedRead = async (p) => {
+    if (++open > 100) throw new Error("too many outstanding host calls");
+    most = Math.max(most, open);
+    try { return await readText(p); } finally { open--; }
+  };
+  const { files, cut } = await listChanges(root, exec, limitedRead);
+  assert.equal(files.length, 1000);
+  assert.equal(cut, true);
+  assert.ok(most <= 100, `peak ${most}`);
+});

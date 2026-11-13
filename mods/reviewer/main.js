@@ -86,7 +86,7 @@ export default class Reviewer extends View {
       try {
         do {
           this.again = false;
-          this.scope = await collectScope(this.folders(), run_exec, readText);
+          this.scope = await collectScope(this.folders(), { kind: "uncommitted" }, run_exec, readText);
           this.files = [...this.scope.repos.flatMap((r) => r.files.map((file) => ({ root: r.root, file }))), ...this.orphans()];
           this.watch([...new Set(this.scope.folders.filter((f) => f.state === "repo").map((f) => f.root))], cx);
           if (!this.files.some((f) => fileKey(f.root, f.file.path) === this.selected)) {

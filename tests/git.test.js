@@ -262,6 +262,60 @@ test("fileDiff: stops at 1500 rows and says it was cut", async () => {
   assert.deepEqual(tracked.rows[1499], { kind: "del", old: 1499, new: null, text: "l1499" });
 });
 
+test("listChanges with a range to the working tree: commits, staged, unstaged and untracked since it", async () => {
+  const root = makeRepo({ ".gitignore": "*.log\n", "kept.txt": "k\n", "edited.txt": "1\n2\n", "gone.txt": "g\n" });
+  const base = gitIn(root, "rev-parse", "HEAD").trim();
+  write(root, "committed.txt", "c\n");
+  write(root, "edited.txt", "1\nTWO\n");
+  fs.rmSync(path.join(root, "gone.txt"));
+  gitIn(root, "add", "-A");
+  gitIn(root, "commit", "-q", "-m", "work");
+  write(root, "staged.txt", "s\n");
+  gitIn(root, "add", "staged.txt");
+  write(root, "edited.txt", "1\nTWO\n3\n");
+  write(root, "new.txt", "n\nm\n");
+  write(root, "debug.log", "ignored\n");
+  assert.deepEqual(await listChanges(root, exec, readText, { from: base, to: null }), {
+    cut: false,
+    files: [
+      { path: "committed.txt", status: "A", add: 1, del: 0, untracked: false, binary: false },
+      { path: "edited.txt", status: "M", add: 2, del: 1, untracked: false, binary: false },
+      { path: "gone.txt", status: "D", add: 0, del: 1, untracked: false, binary: false },
+      { path: "new.txt", status: "A", add: 2, del: 0, untracked: true, binary: false },
+      { path: "staged.txt", status: "A", add: 1, del: 0, untracked: false, binary: false },
+    ],
+  });
+});
+
+test("listChanges with a range between commits leaves out the working tree", async () => {
+  const root = makeRepo({ "a.txt": "a\n" });
+  const from = gitIn(root, "rev-parse", "HEAD").trim();
+  write(root, "a.txt", "a\nb\n");
+  gitIn(root, "commit", "-q", "-am", "b");
+  const to = gitIn(root, "rev-parse", "HEAD").trim();
+  write(root, "a.txt", "changed later\n");
+  write(root, "new.txt", "n\n");
+  assert.deepEqual(await listChanges(root, exec, readText, { from, to }), {
+    cut: false,
+    files: [{ path: "a.txt", status: "M", add: 1, del: 0, untracked: false, binary: false }],
+  });
+});
+
+test("fileDiff with a range between commits shows that range only", async () => {
+  const root = makeRepo({ "a.txt": "1\n2\n" });
+  const from = gitIn(root, "rev-parse", "HEAD").trim();
+  write(root, "a.txt", "1\nzwei\n");
+  gitIn(root, "commit", "-q", "-am", "b");
+  const to = gitIn(root, "rev-parse", "HEAD").trim();
+  write(root, "a.txt", "worktree\n");
+  assert.deepEqual((await fileDiff(root, { path: "a.txt", untracked: false }, exec, readText, { from, to })).rows, [
+    { kind: "hunk", old: null, new: null, text: "@@ -1,2 +1,2 @@" },
+    { kind: "ctx", old: 1, new: 1, text: "1" },
+    { kind: "del", old: 2, new: null, text: "2" },
+    { kind: "add", old: null, new: 2, text: "zwei" },
+  ]);
+});
+
 test("reading a repo leaves its index and status unchanged", async () => {
   const root = makeRepo({ "a.txt": "a\n", "b.txt": "b\n" });
   write(root, "a.txt", "A\n");

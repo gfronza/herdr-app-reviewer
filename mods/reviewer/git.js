@@ -46,8 +46,23 @@ async function readStatus(root, exec) {
   return codes;
 }
 
-async function readNumstat(root, exec) {
-  const out = await git(root, ["diff", "HEAD", "--numstat", "-z", "--no-renames"], exec);
+// Maps path -> a status letter (?? when untracked), for a diff between two commits or a commit and the
+// working tree (`to` null); untracked files count only against the working tree.
+async function readRangeStatus(root, range, exec) {
+  const [names, others] = await Promise.all([
+    git(root, ["diff", "--name-status", "-z", "--no-renames", ...revs(range)], exec),
+    range.to ? "" : git(root, ["ls-files", "--others", "--exclude-standard", "-z"], exec),
+  ]);
+  const codes = new Map(), parts = names.split("\0");
+  for (let i = 0; i + 1 < parts.length; i += 2) codes.set(parts[i + 1], parts[i]);
+  for (const path of others.split("\0")) if (path && !path.endsWith("/")) codes.set(path, "??");
+  return codes;
+}
+
+const revs = (range) => (range ? (range.to ? [range.from, range.to] : [range.from]) : ["HEAD"]);
+
+async function readNumstat(root, range, exec) {
+  const out = await git(root, ["diff", ...revs(range), "--numstat", "-z", "--no-renames"], exec);
   const stats = new Map();
   for (const entry of out.split("\0")) {
     const [add, del, ...rest] = entry.split("\t");
@@ -72,9 +87,18 @@ async function mapInWaves(items, fn) {
   return out;
 }
 
-export async function listChanges(root, exec, readText) {
-  const head = await hasHead(root, exec);
-  const [codes, stats] = await Promise.all([readStatus(root, exec), head ? readNumstat(root, exec) : new Map()]);
+/** Commit ids; a null `to` is the working tree. @typedef {{ from: string, to: string | null }} Range */
+
+/**
+ * Without a range, every uncommitted change; with one, the diff across that range.
+ * @param {Range} [range]
+ */
+export async function listChanges(root, exec, readText, range) {
+  const head = range ? true : await hasHead(root, exec);
+  const [codes, stats] = await Promise.all([
+    range ? readRangeStatus(root, range, exec) : readStatus(root, exec),
+    head ? readNumstat(root, range, exec) : new Map(),
+  ]);
   const paths = [...codes.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const files = await mapInWaves(paths.slice(0, MAX_FILES), (path) => {
     const xy = codes.get(path);
@@ -134,14 +158,15 @@ function parseDiff(out) {
   return rows;
 }
 
-export async function fileDiff(root, file, exec, readText) {
-  if (file.untracked || !(await hasHead(root, exec))) {
+/** @param {Range} [range] */
+export async function fileDiff(root, file, exec, readText, range) {
+  if (file.untracked || (!range && !(await hasHead(root, exec)))) {
     const text = await readText(`${root}/${file.path}`);
     if (text === null) return UNREADABLE;
     return text.includes("\0") ? BINARY : addedRows(text);
   }
   // Literal, so a name like "f[1].txt" or ":foo" cannot match another file.
-  const out = await git(root, ["diff", "HEAD", "--no-ext-diff", "--no-textconv", "--no-color", "--", `:(literal)${file.path}`], exec);
+  const out = await git(root, ["diff", ...revs(range), "--no-ext-diff", "--no-textconv", "--no-color", "--", `:(literal)${file.path}`], exec);
   const rows = parseDiff(out);
   if (!rows.length && /^Binary files /m.test(out)) return BINARY;
   return capRows(rows);

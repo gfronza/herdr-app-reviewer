@@ -46,7 +46,7 @@ async function repoIn(root, scope, exec, readText) {
   }
   if (scope.kind === "turn") {
     const r = scope.repos[root];
-    const problem = scope.gen === null ? "no agent turn seen yet"
+    const problem = scope.gen === null ? "no agent turn seen since this pane opened"
       : scope.raced ? "files changed just as the turn started, so this turn is not shown"
       : !r ? "watched only after the turn started" : r.problem ?? null;
     const range = problem ? null : { from: r.from, to: r.to, objects: scope.objects };

@@ -4,12 +4,13 @@ import {
   agents, closeOverlay, exec, focused, nextCommand, panes, pickFolder, props, readTextFile, run,
   setShared, settings, shared, theme as herdrTheme, watchFolder, writeTextFile,
 } from "herdr";
-import { collectScope, MAX_FOLDERS } from "./scope.js";
+import { collectScope, fileKey, MAX_FOLDERS } from "./scope.js";
 import { fileDiff } from "./git.js";
 import { colorFor, createHighlighter, languageFor } from "./syntax.js";
 import { createComment, formatReview, locate } from "./review.js";
 import { moveLine, nextChange, nextFile, selectionRange } from "./nav.js";
 import { commitOf, defaultBase, listBranches, listCommits, orderRun } from "./revs.js";
+import { Turns, createTracker, workState } from "./turns.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
@@ -18,7 +19,8 @@ const ROW = 20;
 const KEYS = {
   j: "down", k: "up", "]": "next-change", "[": "prev-change", f: "next-file", F: "prev-file", tab: "switch-area",
   v: "select", c: "comment", e: "edit", d: "delete", y: "copy", s: "send", l: "layout", escape: "cancel",
-  u: "scope-uncommitted", b: "scope-branch", g: "scope-commits", B: "pick-base", G: "pick-commits",
+  u: "scope-uncommitted", b: "scope-branch", t: "scope-turn", g: "scope-commits", B: "pick-base", G: "pick-commits",
+  o: "session-only",
 };
 const WATCH_KEY = "reviewer.watch";
 const LAYOUT_KEY = "reviewer.layout";
@@ -26,8 +28,8 @@ const BASES_KEY = "reviewer.bases";
 const run_exec = (cmd, args, opts) => exec(cmd, args, { cwd: opts?.cwd });
 // readTextFile rejects on bytes that are not UTF-8; git.js expects null for an unreadable file.
 const readText = (path) => readTextFile(path).catch(() => null);
-const fileKey = (root, path) => `${root}\0${path}`;
 const repoName = (root) => root.split("/").pop();
+const clock = (date) => date.toTimeString().slice(0, 5);
 
 // Opened with `mod.open:reviewer`, this copy is a one-shot launcher: it adds or
 // removes the reviewer pane in the current tab, then closes itself.
@@ -81,6 +83,11 @@ export default class Reviewer extends View {
     this.area = "files"; this.cursor = 0; this.sel = null; this.comments = []; this.nextId = 1;
     this.box = null; this.picking = null; this.view = "changes"; this.notice = null; this.watching = new Map();
     this.visible = { start: 0, end: 0 };
+    this.sessionOnly = false; this.since = new Date(); this.observe = createTracker();
+    // A turn's snapshots stay while an unsent comment made in it can still be diffed.
+    this.turns = new Turns(run_exec, { name: this.tab, keep: () => new Set(this.comments.map((c) => /^turn:(\d+)$/.exec(c.scope.key)?.[1]).filter(Boolean).map(Number)) });
+    this.turns.open().catch((e) => { this.error = String(e); });
+    cx.timer.every(250, (cx) => this.followAgents(cx));
     cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
@@ -99,15 +106,18 @@ export default class Reviewer extends View {
   scopeSpec() {
     if (this.scopeKind === "branch") return { kind: "branch", bases: bases() };
     if (this.scopeKind === "commits") return { kind: "commits", ...this.commitPick };
+    if (this.scopeKind === "turn") return { kind: "turn", ...this.turns.last() };
     return { kind: "uncommitted" };
   }
 
   // Comments belong to the scope they were made in and show only there: in the branch scope, to
-  // the repo's base; in the commits scope, to the repo and its run. Read from the loaded scope.
+  // the repo's base; in the commits scope, to the repo and its run; in the turn scope, to the turn.
+  // Read from the loaded scope.
   keyFor(root) {
     const s = this.spec;
     if (s.kind === "branch") return `branch:${this.scope.repos.find((r) => r.root === root)?.base}`;
     if (s.kind === "commits") return `commits:${s.root}:${s.first}:${s.last}`;
+    if (s.kind === "turn") return `turn:${s.gen}`;
     return "uncommitted";
   }
 
@@ -131,10 +141,11 @@ export default class Reviewer extends View {
       try {
         do {
           this.again = false;
-          const spec = this.scopeSpec();
-          const scope = await collectScope(this.folders(), spec, run_exec, readText);
-          // The scope or a base changed while this pass ran: its result belongs to neither.
-          if (JSON.stringify(spec) !== JSON.stringify(this.scopeSpec())) { this.again = true; continue; }
+          if (this.scopeKind === "turn" || this.sessionOnly) await this.turns.refresh();
+          const spec = this.scopeSpec(), only = this.sessionOnly ? this.turns.session() : null;
+          const scope = await collectScope(this.folders(), spec, run_exec, readText, only);
+          // The scope, a base, a turn, or the session filter changed while this pass ran: its result belongs to neither.
+          if (JSON.stringify(spec) !== JSON.stringify(this.scopeSpec()) || Boolean(only) !== this.sessionOnly) { this.again = true; continue; }
           this.scope = scope; this.spec = spec;
           this.files = [...this.scope.repos.flatMap((r) => r.files.map((file) => ({ root: r.root, range: r.range, file }))), ...this.orphans()];
           this.watch([...new Set(this.scope.folders.filter((f) => f.state === "repo").map((f) => f.root))], cx);
@@ -170,12 +181,24 @@ export default class Reviewer extends View {
       cx.spawn(async (cx) => {
         try {
           while (this.watching.get(root) === token) {
-            await watchFolder(root);
+            const paths = await watchFolder(root);
+            if (paths.some((p) => !/\/\.git(\/|$)/.test(p))) this.turns.wrote(root, Date.now());
             if (this.watching.get(root) === token) this.refresh(cx);
           }
         } catch { if (this.watching.get(root) === token) this.watching.delete(root); }
       });
     }
+  }
+
+  // Herdr sends no turn event: sampling the tab's agents finds the rest → work edge that starts one.
+  followAgents(cx) {
+    const { started, ended } = this.observe(workState(agents().filter((a) => a.tab === this.tab).map((a) => a.status)));
+    if (!started && !ended) return;
+    const at = Date.now(), roots = this.watchedRoots();
+    cx.spawn(async (cx) => {
+      try { await (started ? this.turns.start(roots, at) : this.turns.end()); } catch (e) { this.error = String(e); }
+      this.refresh(cx);
+    });
   }
 
   async loadDiff(cx) {
@@ -479,6 +502,8 @@ export default class Reviewer extends View {
       layout: () => setShared(LAYOUT_KEY, sideBySide() ? "stacked" : "side"),
       "scope-uncommitted": () => this.setScope("uncommitted", cx),
       "scope-branch": () => this.setScope("branch", cx),
+      "scope-turn": () => this.setScope("turn", cx),
+      "session-only": () => { this.sessionOnly = !this.sessionOnly; this.refresh(cx); },
       "scope-commits": () => (this.commitPick ? this.setScope("commits", cx) : this.openCommitPicker(cx)),
       "pick-base": () => this.openBasePicker(null, cx),
       "pick-commits": () => this.openCommitPicker(cx),
@@ -511,7 +536,7 @@ export default class Reviewer extends View {
       colored: this.diff ? this.diff.rows.filter((_, i) => this.hl?.runs(i)).length : 0,
       comments: this.comments, items: this.layout().items.filter((it) => it.comment).map((it) => ({ id: it.comment.id, text: it.text, stale: it.stale })),
       picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked",
-      scope: this.scopeKind, spec: this.spec, collapsed: [...this.collapsed], labels: this.scope?.repos?.map((r) => ({ root: r.root, label: r.label, missing: r.missing, problem: r.problem })),
+      scope: this.scopeKind, spec: this.spec, sessionOnly: this.sessionOnly, session: [...this.turns.session()].map((k) => k.replace("\0", ":")), collapsed: [...this.collapsed], labels: this.scope?.repos?.map((r) => ({ root: r.root, label: r.label, missing: r.missing, problem: r.problem })),
       chooser: this.chooser && {
         kind: this.chooser.kind, root: this.chooser.root, at: this.chooser.at, mark: this.chooser.mark?.short ?? null,
         rows: this.chooserRows().map((r) => r.typed ?? r.name ?? `${repoName(r.root)} ${r.short} ${r.subject}`),
@@ -607,9 +632,10 @@ export default class Reviewer extends View {
   // Its own row: beside the header's buttons, the scope tabs ran off a half-width pane.
   toolbar(t) {
     return h_flex().h(32).flex_none().px(12).gap(2).items_center().border_b(1).border_color(t.border)
-      .children([["uncommitted", "Uncommitted"], ["branch", "Branch"], ["commits", "Commits"]].map(([kind, label]) =>
+      .children([["uncommitted", "Uncommitted"], ["branch", "Branch"], ["turn", "Last turn"], ["commits", "Commits"]].map(([kind, label]) =>
         button(t, `scope-${kind}`, label, (cx) => this.act(`scope-${kind}`, cx)).when(this.scopeKind === kind, (b) => b.bg(t.selected))))
       .child(div().flex_1())
+      .child(button(t, "session-only", "This session", (cx) => this.act("session-only", cx)).when(this.sessionOnly, (b) => b.bg(t.selected)))
       .child(button(t, "layout", sideBySide() ? "Stacked" : "Side by side", (cx) => this.act("layout", cx)));
   }
 
@@ -645,10 +671,11 @@ export default class Reviewer extends View {
     const repos = this.scope?.repos ?? [], orphans = this.files.filter((f) => f.orphan);
     const shown = (r) => (this.collapsed.has(r.root) ? 0 : r.files.length);
     const rowsCount = repos.reduce((n, r) => n + 1 + (r.missing ? 1 : 0) + (r.problem || !r.files.length ? 1 : 0) + shown(r), 0)
-      + (orphans.length ? orphans.length + 1 : 0);
+      + (orphans.length ? orphans.length + 1 : 0) + (this.sessionOnly ? 1 : 0);
     const frame = div().flex_none().relative().border_color(this.area === "files" ? t.accent : t.border);
     return (side ? frame.w("35%").max_w(320).border_l(1) : frame.h(Math.min(rowsCount * 24 + 12, 240)).min_h(44).border_b(1))
       .child(v_flex().id("files").absolute().inset_0().overflow_y_scroll().p(6)
+        .when(this.sessionOnly, (e) => e.child(note(t, `This session only: files the agent's turns changed since ${clock(this.since)}`)))
         .children(repos.map((r) => v_flex()
           .child(this.repoHeader(t, r))
           .when(Boolean(r.missing), (e) => e.child(note(t, `${r.missing} no longer resolves; showing ${r.base ?? "nothing"}`)))
@@ -661,7 +688,8 @@ export default class Reviewer extends View {
           .child(h_flex().h(24).px(6).items_center().text_size(11).font_semibold().child("No longer changed, with comments"))
           .children(orphans.map((o) => this.fileRow(t, o.root, o.file)))))
         .when(!repos.length && !orphans.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error ?? (this.loadingSince || !this.scope ? "Loading changes…"
-          : this.scopeKind === "commits" ? "The picked repo is no longer watched; press G to pick commits" : "No uncommitted changes")))))
+          : this.scopeKind === "commits" ? "The picked repo is no longer watched; press G to pick commits"
+          : this.sessionOnly ? "No uncommitted changes from this session's turns" : "No uncommitted changes")))))
       .child(Scrollbar.vertical("files").absolute().inset_0());
   }
 
@@ -805,7 +833,7 @@ export default class Reviewer extends View {
     }
     return h_flex().flex_none().h(28).px(12).gap(12).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
       .child(div().flex_1().min_w(0).truncate().text_color(this.error ? t.blocked : this.notice ? t.foreground : t.dim)
-        .child(this.error ?? this.notice ?? "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/g scope · B base · G commits · l layout"));
+        .child(this.error ?? this.notice ?? "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/t/g scope · o session · B base · G commits · l layout"));
   }
 }
 

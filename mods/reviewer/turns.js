@@ -66,11 +66,12 @@ async function changedPaths(exec, root, store, from, to) {
 export class Turns {
   /**
    * @param {(cmd: string, args: string[], opts: { cwd: string }) => Promise<{ code: number, stdout: string, stderr: string }>} exec
-   * @param {{ keep?: () => Set<number>, clock?: () => number }} [opts] `keep`: turns whose snapshots
-   *   unsent comments still read.
+   * @param {{ name?: string | null, keep?: () => Set<number>, clock?: () => number }} [opts] `name`: the
+   *   pane's own temp folder name; `keep`: turns whose snapshots unsent comments still read.
    */
-  constructor(exec, { keep = () => new Set(), clock = Date.now } = {}) {
+  constructor(exec, { name = null, keep = () => new Set(), clock = Date.now } = {}) {
     this.exec = exec; this.keep = keep; this.clock = clock;
+    this.name = name && /^[\w-]+$/.test(name) ? name : null;
     this.scratch = null; this.next = 1; this.dirs = new Map();
     /** @type {Turn | null} the latest turn that changed something */
     this.current = null;
@@ -86,6 +87,21 @@ export class Turns {
     return step;
   }
 
+  /** Makes this pane's temp folder, clearing what an earlier copy of the pane left in it. */
+  open() {
+    return this.run(() => this.ensureScratch());
+  }
+
+  // A named folder is the pane's own, so a reopened or reloaded pane replaces what the last copy
+  // left, and a closed pane leaves at most one turn behind for the OS's temp cleanup.
+  async ensureScratch() {
+    if (this.scratch) return;
+    const script = this.name
+      ? 'd="${TMPDIR:-/tmp}"; d="${d%/}/herdr-reviewer-$1"; rm -rf "$d" && mkdir -p "$d" && printf %s "$d"'
+      : 'd="${TMPDIR:-/tmp}"; mktemp -d "${d%/}/herdr-reviewer.XXXXXX"';
+    this.scratch = (await this.must("sh", ["-c", script, "sh", this.name ?? ""])).trim();
+  }
+
   /** A watched repo changed outside .git at `at`; a change as a turn starts may sit in its baseline. */
   wrote(root, at) {
     this.writes.set(root, at);
@@ -99,7 +115,7 @@ export class Turns {
       // An end the pane never saw: the old turn's changes so far are all it gets.
       if (this.current && !this.current.ended) this.freeze(this.current, await this.measure(this.current));
       if (this.pending) await this.drop(this.pending);
-      this.scratch ??= (await this.must("mktemp", ["-d", "-t", "herdr-reviewer.XXXXXX"])).trim();
+      await this.ensureScratch();
       const gen = this.next++, dir = `${this.scratch}/turn-${gen}`, store = `${dir}/objects`;
       await this.must("mkdir", ["-p", store]);
       this.dirs.set(gen, dir);
@@ -196,10 +212,14 @@ export class Turns {
     return new Set([...this.done, ...live]);
   }
 
-  /** The latest turn as the turn scope reads it: per repo, a range or the reason it has none. */
+  /**
+   * The latest turn as the turn scope reads it: per repo, a range or the reason it has none.
+   * @returns {{ gen: number | null, raced: boolean, objects: string | null, repos: Record<string, { from?: string, to?: string, problem?: string }> }}
+   */
   last() {
     const t = this.current;
     if (!t) return { gen: null, raced: false, objects: null, repos: {} };
+    /** @type {Record<string, { from?: string, to?: string, problem?: string }>} */
     const repos = {};
     for (const [root, b] of t.base) {
       const n = t.now.get(root);

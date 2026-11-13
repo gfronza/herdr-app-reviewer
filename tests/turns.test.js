@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -44,6 +44,13 @@ function gitState(dir) {
   return out;
 }
 
+// Every Turns made here, so their temp folders go when the tests end.
+const made = [];
+after(() => { for (const t of made) if (t.scratch) fs.rmSync(t.scratch, { recursive: true, force: true }); });
+class TestTurns extends Turns {
+  constructor(...args) { super(...args); made.push(this); }
+}
+
 const turnScope = (turns) => ({ kind: /** @type {const} */ ("turn"), ...turns.last() });
 const listed = async (root, turns) => (await collectScope([root], turnScope(turns), exec, readText)).repos[0];
 const turnDirs = (turns) => (turns.scratch ? fs.readdirSync(turns.scratch).sort() : []);
@@ -78,7 +85,7 @@ test("last turn: only the turn's own changes, against snapshots that leave .git 
   write(root, "a.txt", "a\nbefore\n");
   write(root, "u.txt", "untracked before\n");
   const before = gitState(root);
-  const turns = new Turns(exec);
+  const turns = new TestTurns(exec);
   await turns.start([root], Date.now());
   write(root, "a.txt", "a\nbefore\nturn\n");
   write(root, "n.txt", "new\n");
@@ -96,7 +103,7 @@ test("last turn: only the turn's own changes, against snapshots that leave .git 
 
 test("last turn: a commit made during the turn still shows the turn's change", async () => {
   const root = makeRepo({ "a.txt": "a\n" });
-  const turns = new Turns(exec);
+  const turns = new TestTurns(exec);
   await turns.start([root], Date.now());
   write(root, "a.txt", "a\nturn\n");
   gitIn(root, "commit", "-q", "-am", "during the turn");
@@ -106,7 +113,7 @@ test("last turn: a commit made during the turn still shows the turn's change", a
 
 test("last turn: a turn that changes nothing leaves the previous turn and removes its own snapshot", async () => {
   const root = makeRepo({ "a.txt": "a\n" });
-  const turns = new Turns(exec);
+  const turns = new TestTurns(exec);
   await turns.start([root], Date.now());
   write(root, "a.txt", "a\none\n");
   await turns.end();
@@ -121,7 +128,7 @@ test("last turn: a turn that changes nothing leaves the previous turn and remove
 test("last turn: a newer turn removes the older snapshot unless a comment still reads it", async () => {
   const root = makeRepo({ "a.txt": "a\n" });
   let keep = new Set();
-  const turns = new Turns(exec, { keep: () => keep });
+  const turns = new TestTurns(exec, { keep: () => keep });
   const turn = async (text) => {
     await turns.start([root], Date.now());
     write(root, "a.txt", `a\n${text}\n`);
@@ -141,7 +148,7 @@ test("last turn: a newer turn removes the older snapshot unless a comment still 
 test("last turn: a write as the turn starts may sit in its baseline, so the turn is marked raced", async () => {
   const root = makeRepo({ "a.txt": "a\n" });
   const now = 10000;
-  const turns = new Turns(exec, { clock: () => now });
+  const turns = new TestTurns(exec, { clock: () => now });
   turns.wrote(root, 9000);
   await turns.start([root], 10000);
   write(root, "a.txt", "a\nturn\n");
@@ -150,7 +157,7 @@ test("last turn: a write as the turn starts may sit in its baseline, so the turn
   const repo = await listed(root, turns);
   assert.deepEqual([repo.files, repo.problem], [[], "files changed just as the turn started, so this turn is not shown"]);
 
-  const late = new Turns(exec, { clock: () => now });
+  const late = new TestTurns(exec, { clock: () => now });
   await late.start([root], 10000);
   late.wrote(root, 10200);
   late.wrote(root, 10301);
@@ -158,7 +165,7 @@ test("last turn: a write as the turn starts may sit in its baseline, so the turn
   await late.refresh();
   assert.equal(late.last().raced, true);
 
-  const clear = new Turns(exec, { clock: () => now });
+  const clear = new TestTurns(exec, { clock: () => now });
   await clear.start([root], 10000);
   clear.wrote(root, 10301);
   write(root, "a.txt", "a\nclear\n");
@@ -168,7 +175,7 @@ test("last turn: a write as the turn starts may sit in its baseline, so the turn
 
 test("session: the files every seen turn changed, not edits made between turns", async () => {
   const root = makeRepo({ "x.txt": "x\n", "y.txt": "y\n", "z.txt": "z\n" });
-  const turns = new Turns(exec);
+  const turns = new TestTurns(exec);
   await turns.start([root], Date.now());
   write(root, "x.txt", "x\nturn one\n");
   await turns.end();
@@ -185,11 +192,25 @@ test("last turn: a repo with git's split index gets no snapshot and is left unto
   const root = makeRepo({ "a.txt": "a\n" });
   gitIn(root, "update-index", "--split-index");
   const before = gitState(root);
-  const turns = new Turns(exec);
+  const turns = new TestTurns(exec);
   await turns.start([root], Date.now());
   write(root, "a.txt", "a\nturn\n");
   await turns.end();
   assert.deepEqual(gitState(root), before);
   const repo = await listed(root, turns);
   assert.deepEqual([repo.files, repo.problem], [[], "git's split index is on in this repo, so it has no turn snapshot"]);
+});
+
+test("a reopened pane clears what the last copy of it left, in the same folder", async () => {
+  const root = makeRepo({ "a.txt": "a\n" });
+  const name = `test-${process.pid}`;
+  const first = new TestTurns(exec, { name });
+  await first.start([root], Date.now());
+  write(root, "a.txt", "a\nturn\n");
+  await first.end();
+  assert.deepEqual(turnDirs(first), ["turn-1"]);
+  const again = new TestTurns(exec, { name });
+  await again.open();
+  assert.deepEqual([again.scratch, turnDirs(again)], [first.scratch, []]);
+  assert.match(again.scratch, /\/herdr-reviewer-test-\d+$/);
 });

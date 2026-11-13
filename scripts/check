@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Lint and test everything. Git and Claude Code hooks both call this.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+for mod in mods/*/; do
+  [ -e "$mod" ] || continue
+  echo "check: ${mod%/}"
+  # Also writes the mod's gpui-kit.d.ts (and jsconfig.json if absent), which tsc needs.
+  herdr-app check "$mod"
+  node_modules/.bin/tsc -p "${mod}jsconfig.json"
+done
+
+node --test

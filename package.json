@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "scripts/check",
+    "test": "node --test",
+    "prepare": "git config core.hooksPath .githooks"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3"
+  }
+}

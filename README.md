@@ -99,3 +99,7 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 
 Syntax colors come from [highlight.js](https://highlightjs.org) 11.12.0, vendored in
 `mods/reviewer/vendor/` with its BSD-3-Clause license.
+
+## License
+
+MIT, the same as herdr-reviewr. See `LICENSE`.

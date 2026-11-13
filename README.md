@@ -37,7 +37,9 @@ folder picker. A folder inside a repo you already watch adds nothing new; the re
 base folder, so it comes back the next time a reviewer opens on that folder.
 
 **Comments.** Move to a line and press `c`, or select lines with `v` first. Type the comment and
-press Enter. A comment whose lines change on disk is kept and marked stale.
+press Enter. A comment whose lines change on disk is kept and marked stale. If a commented
+file stops changing (reverted or committed), it stays listed under "No longer changed, with
+comments" until you send or delete its comments.
 
 **Copy and send.** `y` copies the review: for each repo, its path, then each comment with its
 file and line, the commented lines, and your text. `s` places the review in the agent's input in
@@ -89,9 +91,9 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 - Tested on macOS only; Linux and Windows are untested.
 - Files over 1 MiB, and untracked files that are not UTF-8 text, are listed but their contents
   are not shown.
+- Up to 10 folders can be watched, base folder included.
 - Lines longer than 500 characters are shown without syntax colors. Up to 1,000 changed files
-  per repo, 1,500 diff lines per file, and 10 watched folders are shown; past those, a notice
-  says the view is cut.
+  per repo and 1,500 diff lines per file are shown; past those, a notice says the view is cut.
 
 ## Credits
 

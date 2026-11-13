@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Stop and SubagentStop: an agent may not finish with failing checks.
+set -uo pipefail
+root="$CLAUDE_PROJECT_DIR"
+cd "$root"
+
+# Committed code already passed the pre-commit hook.
+[ -n "$(git status --porcelain -- mods tests scripts package.json package-lock.json)" ] || exit 0
+
+out=$(scripts/check 2>&1) && exit 0
+
+# Second stop in a row: let it end so a failure it cannot fix does not loop forever.
+if [ "$(jq -r '.stop_hook_active')" = "true" ]; then
+  jq -n --arg msg "Checks still failing. The agent was told once; review before relying on this work." \
+    '{systemMessage: $msg}'
+  exit 0
+fi
+printf 'Checks are failing. Fix them, or say why they cannot pass, before finishing:\n%s\n' "$out" >&2
+exit 2

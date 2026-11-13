@@ -104,6 +104,8 @@ function capRows(rows) {
 }
 
 const BINARY = { rows: [], cut: false, notice: "Binary file · no text diff" };
+// readTextFile gives null past 1 MiB, and the mod passes null for bytes that are not UTF-8.
+const UNREADABLE = { rows: [], cut: false, notice: "Not shown: over 1 MiB, or not UTF-8 text" };
 
 function addedRows(text) {
   const n = lineCount(text);
@@ -135,7 +137,8 @@ function parseDiff(out) {
 export async function fileDiff(root, file, exec, readText) {
   if (file.untracked || !(await hasHead(root, exec))) {
     const text = await readText(`${root}/${file.path}`);
-    return isBinary(text) ? BINARY : addedRows(text);
+    if (text === null) return UNREADABLE;
+    return text.includes("\0") ? BINARY : addedRows(text);
   }
   // Literal, so a name like "f[1].txt" or ":foo" cannot match another file.
   const out = await git(root, ["diff", "HEAD", "--no-ext-diff", "--no-textconv", "--no-color", "--", `:(literal)${file.path}`], exec);

@@ -226,7 +226,12 @@ test("fileDiff: binary files, tracked or not, get a notice", async () => {
   const notice = { rows: [], cut: false, notice: "Binary file · no text diff" };
   assert.deepEqual(await fileDiff(root, { path: "img.bin", untracked: false }, exec, readText), notice);
   assert.deepEqual(await fileDiff(root, { path: "new.bin", untracked: true }, exec, readText), notice);
-  assert.deepEqual(await fileDiff(root, { path: "unreadable", untracked: true }, exec, async () => null), notice);
+});
+
+test("fileDiff: a file that cannot be read as text says so instead of calling it binary", async () => {
+  const root = makeRepo({ "seed.txt": "x\n" });
+  assert.deepEqual(await fileDiff(root, { path: "huge.txt", untracked: true }, exec, async () => null),
+    { rows: [], cut: false, notice: "Not shown: over 1 MiB, or not UTF-8 text" });
 });
 
 test("fileDiff: expands tabs, cuts long lines, skips the no-newline marker", async () => {

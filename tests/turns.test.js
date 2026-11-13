@@ -296,16 +296,18 @@ test("last turn: a repo with git's split index gets no snapshot and is left unto
   assert.deepEqual([repo.files, repo.problem], [[], "git's split index is on in this repo, so it has no turn snapshot"]);
 });
 
-test("a reopened pane clears what the last copy of it left, in the same folder", async () => {
+test("a reopened pane clears what the last copy of it left, in the same folder, at its first turn", async () => {
   const root = makeRepo({ "a.txt": "a\n" });
   const name = `test-${process.pid}`;
   const first = new TestTurns(exec, { name });
-  await first.start([root], Date.now());
-  write(root, "a.txt", "a\nturn\n");
-  await first.end();
-  assert.deepEqual(turnDirs(first), ["turn-1"]);
+  for (const text of ["one", "two"]) {
+    await first.start([root], Date.now());
+    write(root, "a.txt", `a\n${text}\n`);
+    await first.end();
+  }
+  assert.deepEqual(turnDirs(first), ["turn-2"]);
   const again = new TestTurns(exec, { name });
-  await again.open();
-  assert.deepEqual([again.scratch, turnDirs(again)], [first.scratch, []]);
+  await again.start([root], Date.now());
+  assert.deepEqual([again.scratch, turnDirs(again)], [first.scratch, ["turn-1"]]);
   assert.match(again.scratch, /\/herdr-reviewer-test-\d+$/);
 });

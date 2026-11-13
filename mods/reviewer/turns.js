@@ -115,13 +115,10 @@ export class Turns {
     return step;
   }
 
-  /** Makes this pane's temp folder, clearing what an earlier copy of the pane left in it. */
-  open() {
-    return this.run(() => this.ensureScratch());
-  }
-
-  // A named folder is the pane's own, so a reopened or reloaded pane replaces what the last copy
-  // left, and a closed pane leaves at most one turn behind for the OS's temp cleanup.
+  // Made at the first turn, not when the pane opens: in a pane the mod.open launcher opened, a
+  // command run from init never settled. A named folder is the pane's own, so a reopened or
+  // reloaded pane replaces what the last copy left, and a closed pane leaves at most one turn
+  // behind for the OS's temp cleanup.
   async ensureScratch() {
     if (this.scratch) return;
     const script = this.name

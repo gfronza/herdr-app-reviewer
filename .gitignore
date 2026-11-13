@@ -1,3 +1,8 @@
 node_modules/
 # Written by `herdr-app check` for the installed app version.
 mods/*/gpui-kit.d.ts
+# Local planning notes, kept out of the published repo.
+.project/
+SPEC.md
+EXPLORE.md
+GRILL.md

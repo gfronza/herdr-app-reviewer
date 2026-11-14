@@ -11,6 +11,7 @@ import { createComment, formatReview, locate } from "./review.js";
 import { moveLine, nextChange, nextFile, selectionRange } from "./nav.js";
 import { commitOf, defaultBase, listBranches, listCommits, orderRun } from "./revs.js";
 import { Turns, createTracker, workState } from "./turns.js";
+import { fileRows } from "./tree.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
@@ -25,11 +26,12 @@ const KEYS = {
   j: "down", k: "up", "]": "next-change", "[": "prev-change", f: "next-file", F: "prev-file", tab: "switch-area",
   v: "select", c: "comment", e: "edit", d: "delete", y: "copy", s: "send", l: "layout", escape: "cancel",
   u: "scope-uncommitted", b: "scope-branch", t: "scope-turn", g: "scope-commits", B: "pick-base", G: "pick-commits",
-  o: "session-only",
+  o: "session-only", z: "file-view",
 };
 const WATCH_KEY = "reviewer.watch";
 const LAYOUT_KEY = "reviewer.layout";
 const BASES_KEY = "reviewer.bases";
+const FILES_KEY = "reviewer.files";
 const run_exec = (cmd, args, opts) => exec(cmd, args, { cwd: opts?.cwd });
 // readTextFile rejects on bytes that are not UTF-8; git.js expects null for an unreadable file.
 const readText = (path) => readTextFile(path).catch(() => null);
@@ -60,6 +62,8 @@ function saveExtraFolders(base, folders) {
 
 // One layout for every reviewer, kept in shared state so it survives restarts.
 const sideBySide = () => shared(LAYOUT_KEY) === "side";
+// Tree or flat file list, one for every reviewer like the layout; the tree is the default.
+const treeView = () => shared(FILES_KEY) !== "flat";
 
 // Picked bases for the branch scope, keyed by repo root (one per worktree), kept across restarts.
 const bases = () => /** @type {Record<string, string>} */ (shared(BASES_KEY) ?? {});
@@ -160,7 +164,8 @@ export default class Reviewer extends View {
           this.files = [...this.scope.repos.flatMap((r) => r.files.map((file) => ({ root: r.root, range: r.range, file }))), ...this.orphans()];
           this.watch([...new Set(this.scope.folders.filter((f) => f.state === "repo").map((f) => f.root))], cx);
           if (!this.files.some((f) => entryKey(f) === this.selected)) {
-            this.pick(this.files.length ? entryKey(this.files[0]) : null);
+            const first = this.shownFiles()[0] ?? this.files[0];
+            this.pick(first ? entryKey(first) : null);
           }
           await this.loadDiff(cx);
           this.error = null;
@@ -530,7 +535,8 @@ export default class Reviewer extends View {
       "scope-commits": () => (this.commitPick ? this.setScope("commits", cx) : this.openCommitPicker(cx)),
       "pick-base": () => this.openBasePicker(null, cx),
       "pick-commits": () => this.openCommitPicker(cx),
-      "toggle-repo": () => this.toggleRepo(this.selectedRoot()),
+      "toggle-repo": () => this.fold(this.selectedRoot()),
+      "file-view": () => setShared(FILES_KEY, treeView() ? "flat" : "tree"),
       "chooser-next": () => this.moveChooser(1),
       "chooser-prev": () => this.moveChooser(-1),
       "chooser-enter": () => this.choose(false, cx),
@@ -558,9 +564,10 @@ export default class Reviewer extends View {
       diff: this.diff && { path: this.diff.path, notice: this.diff.notice, cut: this.diff.cut, rows: this.diff.rows.length },
       colored: this.diff ? this.diff.rows.filter((_, i) => this.hl?.runs(i)).length : 0,
       comments: this.comments, items: this.layout().items.filter((it) => it.comment).map((it) => ({ id: it.comment.id, text: it.text, stale: it.stale })),
-      loading: Boolean(this.loadingSince), picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked",
+      loading: Boolean(this.loadingSince), picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked", fileView: treeView() ? "tree" : "flat",
       scope: this.scopeKind, spec: this.spec, sessionOnly: this.sessionOnly, session: [...this.turns.session().files].map((k) => k.replace("\0", ":")),
-      turnError: this.turnError, earlier: this.files.filter((f) => f.key).map((f) => `${f.key} ${f.file.path}`), collapsed: [...this.collapsed], labels: this.scope?.repos?.map((r) => ({ root: r.root, label: r.label, missing: r.missing, problem: r.problem })),
+      turnError: this.turnError, earlier: this.files.filter((f) => f.key).map((f) => `${f.key} ${f.file.path}`), collapsed: [...this.collapsed].map((k) => k.replace("\0", ":")),
+      list: (({ repos, kept }) => [...repos, ...kept].flatMap((g) => g.rows.map((r) => "  ".repeat(r.depth) + (r.dir ? `${r.name}/${r.closed ? ` (${r.count})` : ""}` : r.prefix + r.name))))(this.groups()), labels: this.scope?.repos?.map((r) => ({ root: r.root, label: r.label, missing: r.missing, problem: r.problem })),
       chooser: this.chooser && {
         kind: this.chooser.kind, root: this.chooser.root, at: this.chooser.at, mark: this.chooser.mark?.short ?? null,
         rows: this.chooserRows().map((r) => r.typed ?? r.name ?? `${repoName(r.root)} ${r.short} ${r.subject}`),
@@ -585,18 +592,36 @@ export default class Reviewer extends View {
     this.reveal();
   }
 
-  // Files in a collapsed repo are skipped; the orphans' group never collapses.
-  stepFile(dir, cx) {
-    const shown = this.files.filter((f) => f.orphan || !this.collapsed.has(f.root));
-    const at = shown.findIndex((f) => entryKey(f) === this.selected);
-    const next = nextFile(shown, at, dir);
-    if (next >= 0) this.select(shown[next], cx);
+  // The file list in screen order: each repo's files, then the two groups kept for comments.
+  // `collapsed` holds closed repos by root and closed folders by group and path.
+  groups(collapsed = this.collapsed) {
+    const tree = treeView(), rows = (group, list) => fileRows(list, tree, group, collapsed);
+    return {
+      repos: (this.scope?.repos ?? []).map((r) => ({
+        repo: r, rows: collapsed.has(r.root) ? [] : rows(r.root, this.files.filter((f) => !f.orphan && f.root === r.root)),
+      })),
+      kept: [{ group: "orphans", title: "No longer changed, with comments", list: this.files.filter((f) => f.orphan && !f.key) },
+        { group: "earlier", title: "Earlier turns, with comments", list: this.files.filter((f) => f.key) }]
+        .filter((g) => g.list.length).map((g) => ({ title: g.title, rows: rows(g.group, g.list) })),
+    };
   }
 
-  toggleRepo(root) {
-    if (!root) return;
-    if (this.collapsed.has(root)) this.collapsed.delete(root);
-    else this.collapsed.add(root);
+  // The files in screen order; by default those in closed repos and folders are left out.
+  shownFiles(collapsed = this.collapsed) {
+    const { repos, kept } = this.groups(collapsed);
+    return [...repos, ...kept].flatMap((g) => g.rows.filter((r) => !r.dir).map((r) => r.entry));
+  }
+
+  stepFile(dir, cx) {
+    const all = this.shownFiles(new Set()), shown = new Set(this.shownFiles().map(entryKey));
+    const next = nextFile(all.map((f) => shown.has(entryKey(f))), all.findIndex((f) => entryKey(f) === this.selected), dir);
+    if (next >= 0) this.select(all[next], cx);
+  }
+
+  fold(key) {
+    if (!key) return;
+    if (this.collapsed.has(key)) this.collapsed.delete(key);
+    else this.collapsed.add(key);
   }
 
   reveal() {
@@ -692,30 +717,26 @@ export default class Reviewer extends View {
   }
 
   fileList(t, side) {
-    const repos = this.scope?.repos ?? [], orphans = this.files.filter((f) => f.orphan && !f.key), earlier = this.files.filter((f) => f.key);
+    const { repos, kept } = this.groups();
     const turnError = (this.scopeKind === "turn" || this.sessionOnly) && this.turnError;
-    const shown = (r) => (this.collapsed.has(r.root) ? 0 : r.files.length);
-    const group = (list) => (list.length ? list.length + 1 : 0);
-    const rowsCount = repos.reduce((n, r) => n + 1 + (r.missing ? 1 : 0) + (r.problem || !r.files.length ? 1 : 0) + shown(r), 0)
-      + group(orphans) + group(earlier) + (this.sessionOnly ? 1 : 0) + (turnError ? 1 : 0);
+    const rowsCount = repos.reduce((n, { repo: r, rows }) => n + 1 + (r.missing ? 1 : 0) + (r.problem || !r.files.length ? 1 : 0) + rows.length, 0)
+      + kept.reduce((n, g) => n + 1 + g.rows.length, 0) + (this.sessionOnly ? 1 : 0) + (turnError ? 1 : 0);
     const frame = div().flex_none().relative().border_color(this.area === "files" ? t.accent : t.border);
     return (side ? frame.w("35%").max_w(320).border_l(1) : frame.h(Math.min(rowsCount * 24 + 12, 240)).min_h(44).border_b(1))
       .child(v_flex().id("files").absolute().inset_0().overflow_y_scroll().p(6)
         .when(Boolean(turnError), (e) => e.child(note(t, `Turn tracking failed: ${turnError}`)))
         .when(this.sessionOnly, (e) => e.child(note(t, `This session only: files the agent's turns changed since ${clock(this.since)}`)))
-        .children(repos.map((r) => v_flex()
+        .children(repos.map(({ repo: r, rows }) => v_flex()
           .child(this.repoHeader(t, r))
           .when(Boolean(r.missing), (e) => e.child(note(t, `${r.missing} no longer resolves; showing ${r.base ?? "nothing"}`)))
           .when(Boolean(r.problem), (e) => e.child(note(t, r.problem)))
           .when(!r.problem && !r.files.length, (e) => e.child(note(t, `No changes${this.sessionOnly ? " from this session's turns" : ""} ${r.base ? `since ${r.base}` : `in ${r.label}`}`)))
-          .when(!this.collapsed.has(r.root), (e) => e
-            .children(r.files.map((file) => this.fileRow(t, { root: r.root, file })))
-            .when(r.cut, (e) => e.child(note(t, "Showing the first 1,000 changed files"))))))
-        .children([{ title: "No longer changed, with comments", list: orphans }, { title: "Earlier turns, with comments", list: earlier }]
-          .filter(({ list }) => list.length).map(({ title, list }) => v_flex()
-            .child(h_flex().h(24).px(6).items_center().text_size(11).font_semibold().child(title))
-            .children(list.map((o) => this.fileRow(t, o)))))
-        .when(!repos.length && !orphans.length && !earlier.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error ?? (this.loadingSince || !this.scope ? "Loading changes…"
+          .children(rows.map((row) => this.listRow(t, row)))
+          .when(r.cut && !this.collapsed.has(r.root), (e) => e.child(note(t, "Showing the first 1,000 changed files")))))
+        .children(kept.map(({ title, rows }) => v_flex()
+          .child(h_flex().h(24).px(6).items_center().text_size(11).font_semibold().child(title))
+          .children(rows.map((row) => this.listRow(t, row)))))
+        .when(!repos.length && !kept.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error ?? (this.loadingSince || !this.scope ? "Loading changes…"
           : this.scopeKind === "commits" ? "The picked repo is no longer watched; press G to pick commits"
           : this.sessionOnly ? "No uncommitted changes from this session's turns" : "No uncommitted changes")))))
       .child(Scrollbar.vertical("files").absolute().inset_0());
@@ -728,7 +749,7 @@ export default class Reviewer extends View {
     const collapsed = this.collapsed.has(r.root);
     return h_flex().h(24).px(6).gap(6).items_center().text_size(11)
       .child(h_flex().id(`repo-${r.root}`).flex_none().gap(4).items_center().rounded(4).cursor_pointer().hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => { this.toggleRepo(r.root); cx.notify(); })
+        .on_click((_e, cx) => { this.fold(r.root); cx.notify(); })
         .child(div().w(10).text_color(t.dim).child(collapsed ? "▸" : "▾"))
         .child(div().font_semibold().child(repoName(r.root)))
         .when(collapsed && r.files.length > 0, (e) => e.child(div().text_color(t.dim).child(`${r.files.length} file${r.files.length === 1 ? "" : "s"}`))))
@@ -737,15 +758,24 @@ export default class Reviewer extends View {
         .hover((s) => s.bg(t.hover)).on_click((_e, cx) => pick.open(cx)).child(pick.label)));
   }
 
-  fileRow(t, entry) {
-    const { file } = entry, key = entryKey(entry), parts = file.path.split("/"), name = parts.pop();
+  listRow(t, row) {
+    if (!row.dir) return this.fileRow(t, row);
+    return h_flex().id(`dir-${row.key}`).h(24).flex_none().pl(8 + row.depth * 14).pr(8).gap(6).items_center().rounded(6).cursor_pointer()
+      .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.fold(row.key); cx.notify(); })
+      .child(div().w(10).flex_none().text_color(t.dim).child(row.closed ? "▸" : "▾"))
+      .child(div().min_w(0).truncate().text_color(t.muted).child(`${row.name}/`))
+      .when(row.closed, (e) => e.child(div().flex_none().text_size(11).text_color(t.dim).child(`${row.count} file${row.count === 1 ? "" : "s"}`)));
+  }
+
+  fileRow(t, { entry, prefix, name, depth }) {
+    const { file } = entry, key = entryKey(entry);
     const color = file.status === "A" ? t.ansi2 : file.status === "M" ? t.blocked : file.status === "·" ? t.dim : t.ansi1;
-    return h_flex().id(`file-${key}`).h(24).flex_none().px(8).gap(8).items_center().rounded(6).cursor_pointer()
+    return h_flex().id(`file-${key}`).h(24).flex_none().pl(8 + depth * 14).pr(8).gap(8).items_center().rounded(6).cursor_pointer()
       .when(this.selected === key, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { this.area = "files"; this.select(this.files.find((f) => entryKey(f) === key), cx); })
-      .child(div().w(12).text_size(11).text_color(color).child(file.status))
+      .child(div().w(12).flex_none().text_size(11).text_color(color).child(file.status))
       .child(h_flex().flex_1().min_w(0)
-        .child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : ""))
+        .child(div().text_color(t.dim).truncate().child(prefix))
         .child(div().min_w(0).truncate().child(name)))
       .when(file.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${file.add}`)))
       .when(file.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${file.del}`)));
@@ -861,7 +891,7 @@ export default class Reviewer extends View {
     }
     return h_flex().flex_none().h(28).px(12).gap(12).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
       .child(div().flex_1().min_w(0).truncate().text_color(this.error ? t.blocked : this.notice ? t.foreground : t.dim)
-        .child(this.error ?? this.notice ?? "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/t/g scope · o session · B base · G commits · l layout"));
+        .child(this.error ?? this.notice ?? "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/t/g scope · o session · B base · G commits · l layout · z tree"));
   }
 }
 

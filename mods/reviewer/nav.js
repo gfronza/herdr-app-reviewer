@@ -19,8 +19,12 @@ export function nextChange(rows, i, dir) {
   return i;
 }
 
-export function nextFile(files, current, dir) {
-  return files.length === 0 ? -1 : clamp(current + dir, files.length - 1);
+// `shown` flags each file in screen order, closed folders included. Stepping from a file a fold
+// hid goes on from where it sits; with none selected (-1), the first shown file.
+export function nextFile(shown, current, dir) {
+  if (current < 0) return shown.indexOf(true);
+  for (let k = current + dir; k >= 0 && k < shown.length; k += dir) if (shown[k]) return k;
+  return shown[current] ? current : -1;
 }
 
 export function selectionRange(anchor, cursor) {

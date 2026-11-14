@@ -29,9 +29,12 @@ folder (its *base folder*). It stays bound to that folder when you focus other p
 key again to close it.
 
 The pane lists every uncommitted change: staged, unstaged, and untracked files, but not
-git-ignored ones. Changes are grouped by repo; click a repo's name to collapse or expand its
-files, and `f`/`F` skip the files of a collapsed repo. Select a file to see its diff. The list and the
-open diff update when files change on disk.
+git-ignored ones. Changes are grouped by repo, and each repo's files show as a folder tree:
+folders first, then files, and a folder holding only one folder shares its row (`src/app/`).
+Click a repo's name or a folder to collapse or expand it; `f`/`F` skip the files it hides. `z`
+switches between the tree and a flat list of paths; the choice is kept for every reviewer, across
+restarts. Select a file to see its diff. The list and the open diff update when files change on
+disk.
 
 **Scopes.** The buttons under the header, or `u`, `b`, `t`, and `g`, choose what the pane diffs:
 
@@ -89,6 +92,7 @@ several agents in the tab, a picker asks which one. Sending clears the comments.
 | `l` | Switch between stacked and side-by-side layout (kept for every reviewer, across restarts) |
 | `u` / `b` / `t` / `g` | Scope: uncommitted / branch / last turn / commits |
 | `o` | Show only this session's files, or all files |
+| `z` | Switch the file list between a folder tree and a flat list (kept for every reviewer, across restarts) |
 | `B` / `G` | Pick the base branch / pick commits |
 | `Esc` | Clear the selection, or cancel the comment box or a picker |
 | `Enter` | Save the comment box, or choose in a picker |
@@ -104,7 +108,7 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 `reviewer.comment`, `reviewer.edit`, `reviewer.delete`, `reviewer.copy`, `reviewer.send`,
 `reviewer.layout`, `reviewer.cancel`, `reviewer.scope-uncommitted`, `reviewer.scope-branch`,
 `reviewer.scope-turn`, `reviewer.scope-commits`, `reviewer.session-only`, `reviewer.pick-base`,
-`reviewer.pick-commits`, and
+`reviewer.pick-commits`, `reviewer.file-view`, and
 `reviewer.toggle-repo` (collapses or expands the selected file's repo; no key by default).
 
 ## What it runs and reads

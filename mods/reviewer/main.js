@@ -93,11 +93,7 @@ export default class Reviewer extends View {
     this.input = InputState.new({ placeholder: "Comment, Enter to save, Esc to cancel" });
     this.input.on("submit", (_e, cx) => this.saveComment(cx));
     this.filter = InputState.new({ placeholder: "Type to filter" });
-    this.filter.on("change", (_e, cx) => {
-      this.query = this.filter.value().trim();
-      if (this.chooser) this.chooser.at = 0;
-      cx.notify();
-    });
+    this.filter.on("change", (_e, cx) => this.filterTyped(cx));
     this.filter.on("submit", (e, cx) => this.choose(Boolean(e.shift), cx));
     this.finder = InputState.new({ placeholder: "Find in this diff: Enter keeps the matches, Esc clears them" });
     this.finder.on("change", (_e, cx) => this.findTyped(cx));
@@ -256,9 +252,16 @@ export default class Reviewer extends View {
     const label = entry.key ? entry.label : this.scope.repos.find((r) => r.root === entry.root)?.label ?? null;
     const scope = { key: entry.key ?? this.keyFor(entry.root), label, range: entry.range };
     this.setDiff({ key: this.selected, root: entry.root, path: entry.file.path, scope, untracked: entry.file.untracked, text, ...result }, cx);
-    // A search hit opens its file with the cursor on the matching row.
-    this.cursor = moveLine(this.diff.rows, this.pendingRow ?? this.cursor, 0);
-    if (this.pendingRow !== null) { this.pendingRow = null; this.reveal(); }
+    if (this.pendingRow === null) this.cursor = moveLine(this.diff.rows, this.cursor, 0);
+    else { this.landOn(this.pendingRow); this.pendingRow = null; }
+  }
+
+  // A search hit's row comes from the diff read when the search opened; if the file changed since,
+  // the nearest match at or after it stands in.
+  landOn(row) {
+    const matches = this.matches();
+    this.cursor = moveLine(this.diff.rows, matches.includes(row) || !matches.length ? row : nextMatch(matches, row - 1, 1), 0);
+    this.reveal();
   }
 
   setDiff(diff, cx) {
@@ -290,7 +293,7 @@ export default class Reviewer extends View {
   }
 
   pick(key) {
-    this.selected = key; this.diff = null; this.hl = null; this.hlGen++; this.cursor = 0; this.sel = null;
+    this.selected = key; this.diff = null; this.hl = null; this.hlGen++; this.cursor = 0; this.sel = null; this.pendingRow = null;
   }
 
   select(entry, cx) {
@@ -475,19 +478,22 @@ export default class Reviewer extends View {
 
   // Reads every listed file's diff once, in waves, so typing then filters in memory.
   openCodeSearch(cx) {
-    const entries = this.files.filter((f) => !f.file.binary);
+    const entries = this.shownFiles(new Set()).filter((f) => !f.file.binary);
     if (!entries.length) { this.say("No changed lines to search", cx); return; }
     this.openChooser({ kind: "code", total: entries.length, read: 0 }, async (cx, c) => {
       const items = [];
       let rows = 0;
       for (let i = 0; i < entries.length && rows < SEARCH_ROWS; i += 16) {
-        const wave = await Promise.all(entries.slice(i, i + 16).map(async (entry) =>
-          ({ entry, rows: (await fileDiff(entry.root, entry.file, run_exec, readText, entry.range).catch(() => ({ rows: [] }))).rows })));
+        // A diff cut short, unreadable, or failed is searched as far as it goes and counted, so "No matches" is not taken at its word.
+        const wave = await Promise.all(entries.slice(i, i + 16).map(async (entry) => {
+          const d = await fileDiff(entry.root, entry.file, run_exec, readText, entry.range).catch(() => null);
+          return { entry, rows: d?.rows ?? [], partial: !d || d.cut || Boolean(d.notice) };
+        }));
         if (this.chooser !== c) return {};
         items.push(...wave); rows += wave.reduce((n, w) => n + w.rows.length, 0);
         c.read = items.length; cx.notify();
       }
-      return { items, cut: items.length < entries.length };
+      return { items, cut: items.length < entries.length, partial: items.filter((it) => it.partial).length };
     }, cx);
   }
 
@@ -505,6 +511,12 @@ export default class Reviewer extends View {
     if (c.kind === "commits") return c.items.filter((x) => `${x.short} ${x.subject} ${repoName(x.root)}`.toLowerCase().includes(q));
     const rows = c.items.filter((b) => b.name.toLowerCase().includes(q));
     return this.query && !c.items.some((b) => b.name === this.query) ? [...rows, { typed: this.query }] : rows;
+  }
+
+  filterTyped(cx) {
+    this.query = this.filter.value().trim();
+    if (this.chooser) this.chooser.at = 0;
+    cx.notify();
   }
 
   moveChooser(delta) {
@@ -552,8 +564,12 @@ export default class Reviewer extends View {
     this.notice = null;
     this.closeChooser(cx);
     this.area = row === null ? "files" : "diff";
-    if (entryKey(entry) !== this.selected) { this.select(entry, cx); this.pendingRow = row; }
-    else if (row !== null && this.diff) { this.cursor = moveLine(this.diff.rows, row, 0); this.reveal(); }
+    if (entryKey(entry) !== this.selected) this.select(entry, cx);
+    if (row === null) return;
+    // A line is found in the diff, not in the rendered file.
+    this.rendered = false;
+    if (this.diff) this.landOn(row);
+    else this.pendingRow = row;
   }
 
   // ── Keyboard ───────────────────────────────────────────────────────────
@@ -632,7 +648,7 @@ export default class Reviewer extends View {
       // Test seam, with dump: stands in for typing into the comment box and pressing Enter.
       "test-type": () => { if (props()?.dump && this.box) this.input.set_value(`test comment ${this.nextId}`); },
       "test-enter": () => { if (props()?.dump) this.saveComment(cx); },
-      "test-filter": () => { if (props()?.dump && this.chooser) { this.filter.set_value(String(props().find ?? "")); this.query = this.filter.value().trim(); } },
+      "test-filter": () => { if (props()?.dump && this.chooser) { this.filter.set_value(String(props().find ?? "")); this.filterTyped(cx); } },
       "test-find": () => { if (props()?.dump && this.findOpen) { this.finder.set_value(String(props().find ?? "")); this.findTyped(cx); } },
     };
     // The rendered file has no diff rows to anchor a comment to.
@@ -663,7 +679,7 @@ export default class Reviewer extends View {
         kind: this.chooser.kind, root: this.chooser.root, at: this.chooser.at, mark: this.chooser.mark?.short ?? null,
         rows: this.chooserRows().map((r) => this.chooser.kind === "files" ? r.file.path : this.chooser.kind === "code" ? `${r.entry.file.path}:${r.row}`
           : r.typed ?? r.name ?? `${repoName(r.root)} ${r.short} ${r.subject}`),
-        read: this.chooser.read, cut: this.chooser.cut, more: this.chooser.found?.more,
+        read: this.chooser.read, cut: this.chooser.cut, partial: this.chooser.partial, more: this.chooser.found?.more,
       },
     };
     writeTextFile(`${path}-${Date.now()}.json`, JSON.stringify(state, null, 1), null);
@@ -1061,8 +1077,9 @@ export default class Reviewer extends View {
       .when(!c.items, (e) => e.child(note(t, c.kind === "code" ? `Reading the changed files: ${c.read} of ${c.total}` : "Loading…")))
       .when(Boolean(c.items) && !rows.length, (e) => e.child(note(t, c.kind === "code" && !this.query ? `Type to search ${c.items.length} files` : "No matches")))
       .children(rows.slice(start, start + shown).map(row))
-      .when(Boolean(c.cut || c.found?.more), (e) => e.child(note(t, [c.found?.more && `Showing the first ${SEARCH_HITS} matches`,
-        c.cut && `searched the first ${c.items.length} of ${c.total} files`].filter(Boolean).join("; "))));
+      .when(Boolean(c.cut || c.partial || c.found?.more), (e) => e.child(note(t, [c.found?.more && `Showing the first ${SEARCH_HITS} matches`,
+        c.cut && `searched the first ${c.items.length} of ${c.total} files`,
+        c.partial && `${c.partial} file${c.partial === 1 ? "" : "s"} only partly searched (cut, unreadable, or failed)`].filter(Boolean).join("; "))));
   }
 
   hitRow(t, { entry, rows, row }) {

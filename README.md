@@ -150,8 +150,8 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 
 Planned next, in this order. Plans may change.
 
-- **v1.3, reading comfort:** old and new code side by side in the diff; rendered Markdown; find
-  in file; search files by name and code by content.
+- **v1.3, reading comfort:** files as a collapsible folder tree; old and new code side by side in
+  the diff; rendered Markdown; find in file; search files by name and code by content.
 - **v1.4, durability and reach:** unsent comments that survive closing the pane; Linux and
   Windows tested; spaces on other machines.
 - **v2, beyond changes:** a tab with every file in the repo, and a tab for pull requests.

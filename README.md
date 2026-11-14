@@ -142,7 +142,8 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 ## What it runs and reads
 
 - It runs `git` in each watched repo, read-only: `status`, `diff`, `ls-files`, `rev-parse`,
-  `merge-base`, `log`, `for-each-ref`, and `config` (to read `init.defaultBranch`), with
+  `merge-base`, `log`, `for-each-ref`, `cat-file` (to render a Markdown file as a commit or turn
+  holds it), and `config` (to read `init.defaultBranch`), with
   `--no-optional-locks` and settings that keep git from writing the index. It never stages,
   commits, or changes a file, the index, or a ref.
 - For Last turn and This session, it snapshots each watched repo when a turn starts: it copies the
@@ -153,7 +154,7 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
   `rm` on that folder only.
 - It reads the status of the agents in its tab.
 - It reads files outside its own folder: the files in the folders you watch, to show untracked
-  files and count their lines.
+  files, count their lines, and render Markdown files.
 - It watches those repos for changes on disk.
 - It writes the clipboard when you copy or send.
 - It reaches no network.

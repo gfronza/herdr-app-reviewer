@@ -613,7 +613,11 @@ export default class Reviewer extends View {
       "toggle-repo": () => this.fold(this.selectedRoot()),
       "file-view": () => setShared(FILES_KEY, treeView() ? "flat" : "tree"),
       "diff-view": () => setShared(DIFF_KEY, splitDiff() ? "unified" : "split"),
-      markdown: () => { this.rendered = !this.rendered; this.sel = null; },
+      markdown: () => {
+        this.rendered = !this.rendered;
+        if (this.markdownShown()) this.sel = null;
+        else if (this.diff && !isMarkdown(this.diff.path)) this.say(`Markdown files will show ${this.rendered ? "rendered" : "as a diff"}`, cx);
+      },
       "chooser-next": () => this.moveChooser(1),
       "chooser-prev": () => this.moveChooser(-1),
       "chooser-enter": () => this.choose(false, cx),
@@ -927,7 +931,8 @@ export default class Reviewer extends View {
     return v_flex().flex_1().min_w(0).min_h(0)
       .child(note(t, "Rendered as it reads after these changes · m shows the diff"))
       .child(text === null ? div().p(12).text_color(t.dim).child("Nothing to render: the file is deleted here, binary, or over 1 MiB")
-        : div().id("markdown").flex_1().min_h(0).overflow_y_scrollbar().px(16).py(12).child(TextView.markdown(`md-${key}`, text).selectable(true)));
+        // The root takes the keyboard back on a press, which would leave a text selection nothing can copy.
+        : div().id("markdown").flex_1().min_h(0).overflow_y_scrollbar().px(16).py(12).on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(TextView.markdown(`md-${key}`, text).selectable(true)));
   }
 
   diffView(t) {

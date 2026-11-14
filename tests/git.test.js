@@ -404,3 +404,9 @@ test("fileText: a file deleted by the range, or binary, gives null", async () =>
   assert.equal(await fileText(root, "bin.md", exec, readText, { from, to }), null);
   assert.equal(await fileText(root, "gone.md", exec, readText), null);
 });
+
+test("fileText: a blob over 1 MiB in bytes gives null, though it holds fewer characters", async () => {
+  const root = makeRepo({ "big.md": "é".repeat(600000) });
+  const to = gitIn(root, "rev-parse", "HEAD").trim();
+  assert.equal(await fileText(root, "big.md", exec, readText, { from: to, to }), null);
+});

@@ -41,6 +41,11 @@ line beside its new version, and `w` again goes back to one column. The choice i
 reviewer, across restarts. Movement, selection, and comments work the same: `j`/`k` go through a
 changed block's removed lines, then its added ones. A click on a line selects its new side.
 
+**Rendered Markdown.** `m` shows a Markdown file (`.md`, `.markdown`) rendered, as it reads
+after the changes, in place of its diff; `m` again brings the diff back. It stays on as you move
+between files, and other files keep showing their diff. Comments go on the diff, so `v`, `c`, `e`,
+and `d` ask you to switch back first.
+
 **Scopes.** The buttons under the header, or `u`, `b`, `t`, and `g`, choose what the pane diffs:
 
 - **Uncommitted** (`u`), the default: changes since the last commit.
@@ -97,6 +102,7 @@ several agents in the tab, a picker asks which one. Sending clears the comments.
 | `l` | Switch between stacked and side-by-side layout (kept for every reviewer, across restarts) |
 | `u` / `b` / `t` / `g` | Scope: uncommitted / branch / last turn / commits |
 | `o` | Show only this session's files, or all files |
+| `m` | Show a Markdown file rendered, or its diff |
 | `w` | Switch the diff between one column and old beside new (kept for every reviewer, across restarts) |
 | `z` | Switch the file list between a folder tree and a flat list (kept for every reviewer, across restarts) |
 | `B` / `G` | Pick the base branch / pick commits |
@@ -114,7 +120,7 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 `reviewer.comment`, `reviewer.edit`, `reviewer.delete`, `reviewer.copy`, `reviewer.send`,
 `reviewer.layout`, `reviewer.cancel`, `reviewer.scope-uncommitted`, `reviewer.scope-branch`,
 `reviewer.scope-turn`, `reviewer.scope-commits`, `reviewer.session-only`, `reviewer.pick-base`,
-`reviewer.pick-commits`, `reviewer.file-view`, `reviewer.diff-view`, and
+`reviewer.pick-commits`, `reviewer.file-view`, `reviewer.diff-view`, `reviewer.markdown`, and
 `reviewer.toggle-repo` (collapses or expands the selected file's repo; no key by default).
 
 ## What it runs and reads

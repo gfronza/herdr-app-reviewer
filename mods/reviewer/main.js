@@ -1,11 +1,11 @@
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import {
   agents, closeOverlay, exec, focused, nextCommand, panes, pickFolder, props, readTextFile, run,
   setShared, settings, shared, theme as herdrTheme, watchFolder, writeTextFile,
 } from "herdr";
 import { collectScope, fileKey, MAX_FOLDERS, resolveRoots } from "./scope.js";
-import { fileDiff } from "./git.js";
+import { fileDiff, fileText } from "./git.js";
 import { colorFor, createHighlighter, languageFor } from "./syntax.js";
 import { createComment, formatReview, locate } from "./review.js";
 import { moveLine, nextChange, nextFile, selectionRange } from "./nav.js";
@@ -27,7 +27,7 @@ const KEYS = {
   j: "down", k: "up", "]": "next-change", "[": "prev-change", f: "next-file", F: "prev-file", tab: "switch-area",
   v: "select", c: "comment", e: "edit", d: "delete", y: "copy", s: "send", l: "layout", escape: "cancel",
   u: "scope-uncommitted", b: "scope-branch", t: "scope-turn", g: "scope-commits", B: "pick-base", G: "pick-commits",
-  o: "session-only", z: "file-view", w: "diff-view",
+  o: "session-only", z: "file-view", w: "diff-view", m: "markdown",
 };
 const WATCH_KEY = "reviewer.watch";
 const LAYOUT_KEY = "reviewer.layout";
@@ -41,6 +41,7 @@ const repoName = (root) => root.split("/").pop();
 const clock = (date) => date.toTimeString().slice(0, 5);
 // A listed file; one kept for an earlier turn's comments also carries that turn's scope key.
 const entryKey = (f) => (f.key ? `${f.key}\0${fileKey(f.root, f.file.path)}` : fileKey(f.root, f.file.path));
+const isMarkdown = (path) => /\.(md|markdown)$/i.test(path);
 const turnOf = (key) => Number(/^turn:(\d+)$/.exec(key)?.[1] ?? NaN);
 
 // Opened with `mod.open:reviewer`, this copy is a one-shot launcher: it adds or
@@ -99,6 +100,7 @@ export default class Reviewer extends View {
     this.area = "files"; this.cursor = 0; this.sel = null; this.comments = []; this.nextId = 1;
     this.box = null; this.picking = null; this.view = "changes"; this.notice = null; this.watching = new Map();
     this.visible = [];
+    this.rendered = false;
     this.sessionOnly = false; this.since = new Date(); this.observe = createTracker(); this.turnError = null;
     // A turn's snapshots stay while an unsent comment, or one being written, can still be diffed.
     this.turns = new Turns(run_exec, {
@@ -237,11 +239,14 @@ export default class Reviewer extends View {
     const entry = this.files.find((f) => entryKey(f) === this.selected);
     if (!entry) { this.setDiff(null, cx); return; }
     const spec = this.spec;
-    const result = await fileDiff(entry.root, entry.file, run_exec, readText, entry.range);
+    const [result, text] = await Promise.all([
+      fileDiff(entry.root, entry.file, run_exec, readText, entry.range),
+      isMarkdown(entry.file.path) ? fileText(entry.root, entry.file.path, run_exec, readText, entry.range) : null,
+    ]);
     if (this.selected !== entryKey(entry) || this.spec !== spec) return;
     const label = entry.key ? entry.label : this.scope.repos.find((r) => r.root === entry.root)?.label ?? null;
     const scope = { key: entry.key ?? this.keyFor(entry.root), label, range: entry.range };
-    this.setDiff({ key: this.selected, root: entry.root, path: entry.file.path, scope, untracked: entry.file.untracked, ...result }, cx);
+    this.setDiff({ key: this.selected, root: entry.root, path: entry.file.path, scope, untracked: entry.file.untracked, text, ...result }, cx);
     this.cursor = moveLine(this.diff.rows, this.cursor, 0);
   }
 
@@ -544,6 +549,7 @@ export default class Reviewer extends View {
       "toggle-repo": () => this.fold(this.selectedRoot()),
       "file-view": () => setShared(FILES_KEY, treeView() ? "flat" : "tree"),
       "diff-view": () => setShared(DIFF_KEY, splitDiff() ? "unified" : "split"),
+      markdown: () => { this.rendered = !this.rendered; this.sel = null; },
       "chooser-next": () => this.moveChooser(1),
       "chooser-prev": () => this.moveChooser(-1),
       "chooser-enter": () => this.choose(false, cx),
@@ -554,6 +560,8 @@ export default class Reviewer extends View {
       "test-type": () => { if (props()?.dump && this.box) this.input.set_value(`test comment ${this.nextId}`); },
       "test-enter": () => { if (props()?.dump) this.saveComment(cx); },
     };
+    // The rendered file has no diff rows to anchor a comment to.
+    if (this.markdownShown() && ["select", "comment", "edit", "delete"].includes(action)) { this.say("Comments go on the diff: press m to show it", cx); return; }
     const pick = /^pick-([1-9])$/.exec(action);
     if (pick && this.picking?.[Number(pick[1]) - 1]) this.sendTo(this.picking[Number(pick[1]) - 1], cx);
     else actions[action]?.();
@@ -571,7 +579,7 @@ export default class Reviewer extends View {
       diff: this.diff && { path: this.diff.path, notice: this.diff.notice, cut: this.diff.cut, rows: this.diff.rows.length },
       colored: this.diff ? this.diff.rows.filter((_, i) => this.hl?.runs(i)).length : 0,
       comments: this.comments, items: this.layout().items.filter((it) => it.comment).map((it) => ({ id: it.comment.id, text: it.text, stale: it.stale })),
-      loading: Boolean(this.loadingSince), picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked", fileView: treeView() ? "tree" : "flat", diffView: splitDiff() ? "split" : "unified",
+      loading: Boolean(this.loadingSince), picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked", fileView: treeView() ? "tree" : "flat", diffView: splitDiff() ? "split" : "unified", rendered: this.markdownShown(), markdown: this.diff?.text?.length ?? null,
       lines: this.layout().items.map((it) => (it.comment ? `# ${it.text}` : `${it.left ?? "-"}|${it.right ?? "-"}`)),
       scope: this.scopeKind, spec: this.spec, sessionOnly: this.sessionOnly, session: [...this.turns.session().files].map((k) => k.replace("\0", ":")),
       turnError: this.turnError, earlier: this.files.filter((f) => f.key).map((f) => `${f.key} ${f.file.path}`), collapsed: [...this.collapsed].map((k) => k.replace("\0", ":")),
@@ -793,7 +801,21 @@ export default class Reviewer extends View {
       .when(file.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${file.del}`)));
   }
 
+  markdownShown() {
+    return this.rendered && Boolean(this.diff) && isMarkdown(this.diff.path);
+  }
+
+  // The file as it reads at the scope's end, rendered; it scrolls on its own.
+  markdownView(t) {
+    const { key, text } = this.diff;
+    return v_flex().flex_1().min_w(0).min_h(0)
+      .child(note(t, "Rendered as it reads after these changes · m shows the diff"))
+      .child(text === null ? div().p(12).text_color(t.dim).child("Nothing to render: the file is deleted here, binary, or over 1 MiB")
+        : div().id("markdown").flex_1().min_h(0).overflow_y_scrollbar().px(16).py(12).child(TextView.markdown(`md-${key}`, text).selectable(true)));
+  }
+
   diffView(t) {
+    if (this.markdownShown()) return this.markdownView(t);
     const diff = this.diff, { items, commented } = this.layout(), m = diffMetrics(), split = splitDiff();
     const longest = Math.max(0, ...(diff?.rows ?? []).map((r) => r.text.length * m.char));
     // A split line gives each side the same width, so both sides' columns line up.
@@ -933,7 +955,7 @@ export default class Reviewer extends View {
     }
     return h_flex().flex_none().h(28).px(12).gap(12).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
       .child(div().flex_1().min_w(0).truncate().text_color(this.error ? t.blocked : this.notice ? t.foreground : t.dim)
-        .child(this.error ?? this.notice ?? "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/t/g scope · o session · B base · G commits · l layout · z tree · w split"));
+        .child(this.error ?? this.notice ?? "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/t/g scope · o session · B base · G commits · l layout · z tree · w split · m markdown"));
   }
 }
 

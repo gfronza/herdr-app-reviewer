@@ -185,3 +185,19 @@ export async function fileDiff(root, file, exec, readText, range) {
   if (!rows.length && /^Binary files /m.test(out)) return BINARY;
   return capRows(rows);
 }
+
+// The same limit readTextFile has, so a file reads the same from a commit and from disk.
+const MAX_TEXT = 1024 * 1024;
+
+/**
+ * A file's text at the end of `range`, read from disk when that end is the working tree; null when
+ * it is gone there, binary, or over 1 MiB.
+ * @param {Range} [range]
+ */
+export async function fileText(root, path, exec, readText, range) {
+  const text = range?.to
+    ? await withObjects(exec, range)("git", [...READ, "cat-file", "blob", `${range.to}:${path}`], { cwd: root })
+      .then((r) => (r.code === 0 && r.stdout.length <= MAX_TEXT ? r.stdout : null))
+    : await readText(`${root}/${path}`);
+  return isBinary(text) ? null : text;
+}

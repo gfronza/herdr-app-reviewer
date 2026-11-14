@@ -4,7 +4,7 @@ import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { READ, resolveFolder, listChanges, fileDiff } from "../mods/reviewer/git.js";
+import { READ, resolveFolder, listChanges, fileDiff, fileText } from "../mods/reviewer/git.js";
 
 // Keep the user's git config (signing, hooks, excludes) out of the fixtures.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -380,4 +380,27 @@ test("listChanges with a range to the working tree keeps a file dropped from the
   gitIn(root, "rm", "-q", "--cached", "keep.txt");
   assert.deepEqual((await listChanges(root, exec, readText, { from, to: null })).files,
     [{ path: "keep.txt", status: "D", add: 0, del: 1, untracked: false, binary: false }]);
+});
+
+test("fileText: a range to a commit reads the file there; without one, from disk", async () => {
+  const root = makeRepo({ "doc.md": "# One\n" });
+  const from = gitIn(root, "rev-parse", "HEAD").trim();
+  write(root, "doc.md", "# Two\n");
+  gitIn(root, "commit", "-q", "-am", "b");
+  const to = gitIn(root, "rev-parse", "HEAD").trim();
+  write(root, "doc.md", "# Three\n");
+  assert.equal(await fileText(root, "doc.md", exec, readText, { from, to }), "# Two\n");
+  assert.equal(await fileText(root, "doc.md", exec, readText, { from, to: null }), "# Three\n");
+  assert.equal(await fileText(root, "doc.md", exec, readText), "# Three\n");
+});
+
+test("fileText: a file deleted by the range, or binary, gives null", async () => {
+  const root = makeRepo({ "gone.md": "x\n", "bin.md": "a\0b" });
+  const from = gitIn(root, "rev-parse", "HEAD").trim();
+  gitIn(root, "rm", "-q", "gone.md");
+  gitIn(root, "commit", "-q", "-m", "rm");
+  const to = gitIn(root, "rev-parse", "HEAD").trim();
+  assert.equal(await fileText(root, "gone.md", exec, readText, { from, to }), null);
+  assert.equal(await fileText(root, "bin.md", exec, readText, { from, to }), null);
+  assert.equal(await fileText(root, "gone.md", exec, readText), null);
 });

@@ -12,7 +12,7 @@ import { moveLine, nextChange, nextFile, selectionRange } from "./nav.js";
 import { commitOf, defaultBase, listBranches, listCommits, orderRun } from "./revs.js";
 import { Turns, createTracker, workState } from "./turns.js";
 import { fileRows } from "./tree.js";
-import { lastLine, splitLines } from "./split.js";
+import { lastLine, spans, splitLines } from "./split.js";
 import { findRows, markRuns, nextMatch, searchFiles } from "./find.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
@@ -98,8 +98,9 @@ export default class Reviewer extends View {
     this.finder = InputState.new({ placeholder: "Find in this diff: Enter keeps the matches, Esc clears them" });
     this.finder.on("change", (_e, cx) => this.findTyped(cx));
     this.finder.on("submit", (_e, cx) => this.closeFind(false, cx));
-    // A press elsewhere takes the keyboard away from the box; closing it then keeps keys working.
-    this.finder.on("blur", (_e, cx) => { if (this.findOpen) this.closeFind(false, cx); });
+    // A press elsewhere takes the keyboard away from the box: close it, keeping its text, but leave
+    // the keyboard where it went, which may be another pane.
+    this.finder.on("blur", (_e, cx) => { if (this.findOpen) { this.findOpen = false; cx.notify(); } });
     this.findOpen = false; this.findQuery = ""; this.findFrom = 0; this.pendingRow = null;
     this.query = ""; this.chooser = null; this.scopeKind = "uncommitted"; this.commitPick = null;
     this.collapsed = new Set();
@@ -569,7 +570,7 @@ export default class Reviewer extends View {
     if (entryKey(entry) !== this.selected) this.select(entry, cx);
     if (row === null) return;
     // A line is found in the diff, not in the rendered file.
-    this.rendered = false;
+    if (isMarkdown(entry.file.path)) this.rendered = false;
     if (this.diff) this.landOn(row);
     else this.pendingRow = row;
   }
@@ -640,10 +641,12 @@ export default class Reviewer extends View {
       "chooser-prev": () => this.moveChooser(-1),
       "chooser-enter": () => this.choose(false, cx),
       "chooser-mark": () => this.choose(true, cx),
+      // Esc cancels the nearest thing first; the find text goes only when nothing else was open.
       cancel: () => {
+        const other = Boolean(this.chooser || this.picking || this.sel || this.notice);
         this.sel = null; this.picking = null; this.notice = null;
         if (this.chooser) this.closeChooser(cx);
-        else { this.findQuery = ""; if (this.findOpen) this.closeFind(true, cx); }
+        if (!other) { this.findQuery = ""; if (this.findOpen) this.closeFind(true, cx); }
       },
       find: () => this.openFind(cx),
       "find-file": () => this.openFilePicker(cx),
@@ -1127,16 +1130,15 @@ export default class Reviewer extends View {
     }
     return h_flex().flex_none().h(28).px(12).gap(12).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
       .child(div().flex_1().min_w(0).truncate().text_color(this.error ? t.blocked : this.notice ? t.foreground : t.dim)
-        .child(this.error ?? this.notice ?? (this.findQuery && this.diff && !this.markdownShown() ? `Find "${this.findQuery}": ${this.findStatus()} · n/N next/previous · Esc clears` : "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/t/g scope · o session · B base · G commits · l layout · z tree · w split · m markdown · / find · p file · P search")));
+        .child(this.error ?? this.notice ?? (this.findQuery && this.diff && !this.markdownShown() ? `Find "${this.findQuery}": ${this.findStatus()} · n/N next/previous · Esc clears`
+          : "j/k move · ]/[ change · f/F file · c comment · / find · p file · P search · w split · z tree · m markdown · u/b/t/g scope · o session · l layout · y copy · s send")));
   }
 }
 
-// The diff rows behind a visible range of list items, for coloring those first: one span per
-// side, since one span over a split block would take in its rows off screen too.
+// The diff rows behind a visible range of list items, for coloring those first. Split, the rows on
+// screen are not one run: a span from first to last would take in a long block off screen too.
 function rowRange(items, range) {
-  const shown = items.slice(range.start, range.end).filter((it) => !it.comment);
-  return ["left", "right"].map((side) => shown.map((it) => it[side]).filter((i) => i !== null))
-    .filter((rows) => rows.length).map((rows) => ({ start: Math.min(...rows), end: Math.max(...rows) + 1 }));
+  return spans(items.slice(range.start, range.end).flatMap((it) => (it.comment ? [] : [it.left, it.right])).filter((i) => i !== null));
 }
 
 function button(t, id, label, onClick) {

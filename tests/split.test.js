@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lastLine, splitLines } from "../mods/reviewer/split.js";
+import { lastLine, spans, splitLines } from "../mods/reviewer/split.js";
 
 const rows = (...kinds) => kinds.map((kind) => ({ kind }));
 const pairs = (lines) => lines.map(({ left, right }) => [left, right]);
@@ -49,4 +49,13 @@ test("lastLine: one row finds its own line, and rows not shown find none", () =>
   const lines = splitLines(rows("ctx", "del", "add"));
   assert.equal(lastLine(lines, 2, 2), 1);
   assert.equal(lastLine(lines, 7, 9), -1);
+});
+
+test("spans: runs of row indexes, leaving out rows between them", () => {
+  assert.deepEqual(spans([704, 0, 1, 2, 3, 705, 706]), [{ start: 0, end: 4 }, { start: 704, end: 707 }]);
+});
+
+test("spans: repeated indexes count once, and none gives none", () => {
+  assert.deepEqual(spans([5, 5, 6]), [{ start: 5, end: 7 }]);
+  assert.deepEqual(spans([]), []);
 });

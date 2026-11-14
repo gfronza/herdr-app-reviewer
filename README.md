@@ -43,11 +43,12 @@ changed block's removed lines, then its added ones. A click on a line selects it
 
 **Rendered Markdown.** `m` shows a Markdown file (`.md`, `.markdown`) rendered, as it reads
 after the changes, in place of its diff; `m` again brings the diff back. It stays on as you move
-between files, and other files keep showing their diff. Comments go on the diff, so `v`, `c`, `e`,
+between files, and other files keep showing their diff. Opening a search match in a Markdown
+file (`P`, below) turns it off, to show the matching line. Comments go on the diff, so `v`, `c`, `e`,
 and `d` ask you to switch back first.
 
 **Find in the diff.** `/` opens a find box under the diff. As you type, the cursor jumps to the
-first match and every match is marked; case is ignored. Enter closes the box and keeps the
+next match from where it was, wrapping around, and every match is marked; case is ignored. Enter closes the box and keeps the
 matches; `n` and `N` go to the next and previous one, wrapping around, also in other files you
 open. `Esc` clears them. Find looks at the lines the diff shows, not the whole file.
 
@@ -183,8 +184,6 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 
 Planned next, in this order. Plans may change.
 
-- **v1.3, reading comfort:** files as a collapsible folder tree; old and new code side by side in
-  the diff; rendered Markdown; find in file; search files by name and code by content.
 - **v1.4, durability and reach:** unsent comments that survive closing the pane; Linux and
   Windows tested; spaces on other machines.
 - **v2, beyond changes:** a tab with every file in the repo, and a tab for pull requests.

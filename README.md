@@ -36,6 +36,11 @@ switches between the tree and a flat list of paths; the choice is kept for every
 restarts. Select a file to see its diff. The list and the open diff update when files change on
 disk.
 
+**Split diff.** `w` shows the old code on the left and the new code on the right, each changed
+line beside its new version, and `w` again goes back to one column. The choice is kept for every
+reviewer, across restarts. Movement, selection, and comments work the same: `j`/`k` go through a
+changed block's removed lines, then its added ones. A click on a line selects its new side.
+
 **Scopes.** The buttons under the header, or `u`, `b`, `t`, and `g`, choose what the pane diffs:
 
 - **Uncommitted** (`u`), the default: changes since the last commit.
@@ -92,6 +97,7 @@ several agents in the tab, a picker asks which one. Sending clears the comments.
 | `l` | Switch between stacked and side-by-side layout (kept for every reviewer, across restarts) |
 | `u` / `b` / `t` / `g` | Scope: uncommitted / branch / last turn / commits |
 | `o` | Show only this session's files, or all files |
+| `w` | Switch the diff between one column and old beside new (kept for every reviewer, across restarts) |
 | `z` | Switch the file list between a folder tree and a flat list (kept for every reviewer, across restarts) |
 | `B` / `G` | Pick the base branch / pick commits |
 | `Esc` | Clear the selection, or cancel the comment box or a picker |
@@ -108,7 +114,7 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 `reviewer.comment`, `reviewer.edit`, `reviewer.delete`, `reviewer.copy`, `reviewer.send`,
 `reviewer.layout`, `reviewer.cancel`, `reviewer.scope-uncommitted`, `reviewer.scope-branch`,
 `reviewer.scope-turn`, `reviewer.scope-commits`, `reviewer.session-only`, `reviewer.pick-base`,
-`reviewer.pick-commits`, `reviewer.file-view`, and
+`reviewer.pick-commits`, `reviewer.file-view`, `reviewer.diff-view`, and
 `reviewer.toggle-repo` (collapses or expands the selected file's repo; no key by default).
 
 ## What it runs and reads

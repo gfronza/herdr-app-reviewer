@@ -12,6 +12,7 @@ import { moveLine, nextChange, nextFile, selectionRange } from "./nav.js";
 import { commitOf, defaultBase, listBranches, listCommits, orderRun } from "./revs.js";
 import { Turns, createTracker, workState } from "./turns.js";
 import { fileRows } from "./tree.js";
+import { lastLine, splitLines } from "./split.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
@@ -26,12 +27,13 @@ const KEYS = {
   j: "down", k: "up", "]": "next-change", "[": "prev-change", f: "next-file", F: "prev-file", tab: "switch-area",
   v: "select", c: "comment", e: "edit", d: "delete", y: "copy", s: "send", l: "layout", escape: "cancel",
   u: "scope-uncommitted", b: "scope-branch", t: "scope-turn", g: "scope-commits", B: "pick-base", G: "pick-commits",
-  o: "session-only", z: "file-view",
+  o: "session-only", z: "file-view", w: "diff-view",
 };
 const WATCH_KEY = "reviewer.watch";
 const LAYOUT_KEY = "reviewer.layout";
 const BASES_KEY = "reviewer.bases";
 const FILES_KEY = "reviewer.files";
+const DIFF_KEY = "reviewer.diff";
 const run_exec = (cmd, args, opts) => exec(cmd, args, { cwd: opts?.cwd });
 // readTextFile rejects on bytes that are not UTF-8; git.js expects null for an unreadable file.
 const readText = (path) => readTextFile(path).catch(() => null);
@@ -64,6 +66,8 @@ function saveExtraFolders(base, folders) {
 const sideBySide = () => shared(LAYOUT_KEY) === "side";
 // Tree or flat file list, one for every reviewer like the layout; the tree is the default.
 const treeView = () => shared(FILES_KEY) !== "flat";
+// Unified or split diff, also one for every reviewer; unified is the default.
+const splitDiff = () => shared(DIFF_KEY) === "split";
 
 // Picked bases for the branch scope, keyed by repo root (one per worktree), kept across restarts.
 const bases = () => /** @type {Record<string, string>} */ (shared(BASES_KEY) ?? {});
@@ -94,7 +98,7 @@ export default class Reviewer extends View {
     this.scope = null; this.files = []; this.selected = null; this.diff = null; this.hl = null; this.hlGen = 0;
     this.area = "files"; this.cursor = 0; this.sel = null; this.comments = []; this.nextId = 1;
     this.box = null; this.picking = null; this.view = "changes"; this.notice = null; this.watching = new Map();
-    this.visible = { start: 0, end: 0 };
+    this.visible = [];
     this.sessionOnly = false; this.since = new Date(); this.observe = createTracker(); this.turnError = null;
     // A turn's snapshots stay while an unsent comment, or one being written, can still be diffed.
     this.turns = new Turns(run_exec, {
@@ -254,10 +258,12 @@ export default class Reviewer extends View {
     if (!hl) return;
     cx.spawn(async (cx) => {
       for (;;) {
-        hl.quick(this.visible.start, this.visible.end);
-        cx.notify();
-        await cx.sleep(0);
-        if (gen !== this.hlGen) return;
+        for (const { start, end } of this.visible) {
+          hl.quick(start, end);
+          cx.notify();
+          await cx.sleep(0);
+          if (gen !== this.hlGen) return;
+        }
         const done = hl.step(10000);
         cx.notify();
         if (done) return;
@@ -537,6 +543,7 @@ export default class Reviewer extends View {
       "pick-commits": () => this.openCommitPicker(cx),
       "toggle-repo": () => this.fold(this.selectedRoot()),
       "file-view": () => setShared(FILES_KEY, treeView() ? "flat" : "tree"),
+      "diff-view": () => setShared(DIFF_KEY, splitDiff() ? "unified" : "split"),
       "chooser-next": () => this.moveChooser(1),
       "chooser-prev": () => this.moveChooser(-1),
       "chooser-enter": () => this.choose(false, cx),
@@ -564,7 +571,8 @@ export default class Reviewer extends View {
       diff: this.diff && { path: this.diff.path, notice: this.diff.notice, cut: this.diff.cut, rows: this.diff.rows.length },
       colored: this.diff ? this.diff.rows.filter((_, i) => this.hl?.runs(i)).length : 0,
       comments: this.comments, items: this.layout().items.filter((it) => it.comment).map((it) => ({ id: it.comment.id, text: it.text, stale: it.stale })),
-      loading: Boolean(this.loadingSince), picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked", fileView: treeView() ? "tree" : "flat",
+      loading: Boolean(this.loadingSince), picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked", fileView: treeView() ? "tree" : "flat", diffView: splitDiff() ? "split" : "unified",
+      lines: this.layout().items.map((it) => (it.comment ? `# ${it.text}` : `${it.left ?? "-"}|${it.right ?? "-"}`)),
       scope: this.scopeKind, spec: this.spec, sessionOnly: this.sessionOnly, session: [...this.turns.session().files].map((k) => k.replace("\0", ":")),
       turnError: this.turnError, earlier: this.files.filter((f) => f.key).map((f) => `${f.key} ${f.file.path}`), collapsed: [...this.collapsed].map((k) => k.replace("\0", ":")),
       list: (({ repos, kept }) => [...repos, ...kept].flatMap((g) => g.rows.map((r) => "  ".repeat(r.depth) + (r.dir ? `${r.name}/${r.closed ? ` (${r.count})` : ""}` : r.prefix + r.name))))(this.groups()), labels: this.scope?.repos?.map((r) => ({ root: r.root, label: r.label, missing: r.missing, problem: r.problem })),
@@ -625,13 +633,14 @@ export default class Reviewer extends View {
   }
 
   reveal() {
-    const item = this.layout().items.findIndex((it) => it.row === this.cursor);
+    const item = this.layout().items.findIndex((it) => it.left === this.cursor || it.right === this.cursor);
     if (item >= 0) this.scroll.scroll_to_item(item);
   }
 
   // ── Rendering ──────────────────────────────────────────────────────────
 
-  // Diff rows, with each comment's text as extra rows under its last line. Each comment is
+  // Screen lines, each holding a diff row per side (the same row twice when unified), with each
+  // comment's text as extra lines under the line of its last row. Each comment is
   // located once here: locating per drawn row ran past the script time limit with many comments.
   // A comment whose lines are gone sits above the first row, and the first row reaches it.
   layout() {
@@ -640,9 +649,12 @@ export default class Reviewer extends View {
       const at = locate(c, this.diff.rows);
       return { c, stale: at.stale, end: at.end, span: at.start < 0 ? { start: 0, end: 0 } : at };
     });
+    const lines = splitDiff() ? splitLines(this.diff.rows) : this.diff.rows.map((_, i) => ({ left: i, right: i }));
+    // Split, a block's last row can share a line above its other rows, so the comment goes under the lowest one.
     const after = new Map(), commented = new Set();
     for (const p of placed) {
-      after.set(p.end, [...(after.get(p.end) ?? []), p]);
+      const line = p.end >= 0 ? lastLine(lines, p.span.start, p.span.end) : -1;
+      after.set(line, [...(after.get(line) ?? []), p]);
       if (p.end >= 0) for (let i = p.span.start; i <= p.span.end; i++) commented.add(i);
     }
     const items = [];
@@ -652,7 +664,7 @@ export default class Reviewer extends View {
       }
     };
     commentRows(after.get(-1) ?? []);
-    this.diff.rows.forEach((_, i) => { items.push({ row: i }); commentRows(after.get(i) ?? []); });
+    lines.forEach((line, k) => { items.push(line); commentRows(after.get(k) ?? []); });
     return { items, placed, commented };
   }
 
@@ -782,8 +794,10 @@ export default class Reviewer extends View {
   }
 
   diffView(t) {
-    const diff = this.diff, { items, commented } = this.layout(), m = diffMetrics();
-    const width = Math.max(300, ...(diff?.rows ?? []).map((r) => r.text.length * m.char + 2 * m.gutter + 45));
+    const diff = this.diff, { items, commented } = this.layout(), m = diffMetrics(), split = splitDiff();
+    const longest = Math.max(0, ...(diff?.rows ?? []).map((r) => r.text.length * m.char));
+    // A split line gives each side the same width, so both sides' columns line up.
+    const half = longest + m.gutter + 37, width = Math.max(300, split ? 2 * half : longest + 2 * m.gutter + 45);
     const sel = this.range();
     // overflow_x_scrollbar() wraps its child, so the flex size goes on a plain parent.
     return v_flex().flex_1().min_w(0).min_h(0).font_family(m.font).text_size(m.size)
@@ -791,42 +805,70 @@ export default class Reviewer extends View {
       .when(Boolean(diff?.cut), (e) => e.child(note(t, "Showing the first 1,500 lines")))
       .child(div().flex_1().min_h(0).relative().child(div().id("diff-x").size_full().overflow_x_scrollbar()
         .child(div().w_full().min_w(width).h_full()
-          .child(v_virtual_list("diff", items.length, m.row, (i) => items[i].row !== undefined ? `r${items[i].row}` : `c${items[i].comment.id}-${i}`,
+          .child(v_virtual_list("diff", items.length, m.row, (i) => items[i].comment ? `c${items[i].comment.id}-${i}` : `r${items[i].left ?? ""}:${items[i].right ?? ""}`,
             (range) => {
               this.visible = rowRange(items, range);
-              return items.slice(range.start, range.end).map((it) => it.comment ? this.commentRow(t, it, m) : this.diffRow(t, diff.rows[it.row], it.row, sel, commented.has(it.row), m));
+              return items.slice(range.start, range.end).map((it) => it.comment ? this.commentRow(t, it, m)
+                : !split || diff.rows[it.left]?.kind === "hunk" ? this.diffRow(t, it.right, sel, commented, m)
+                : h_flex().w_full().h(m.row).flex_none()
+                  .child(this.halfRow(t, it.left, "old", sel, commented, m, half))
+                  .child(this.halfRow(t, it.right, "new", sel, commented, m, half)));
             }).track_scroll(this.scroll).on_item_click((key, cx) => this.clickRow(key, cx)).size_full())))
         .child(Scrollbar.vertical("diff").viewport_from_layout().absolute().inset_0()))
       .when(!diff && this.files.length > 0, (e) => e.child(div().px(12).py(6).text_color(t.dim).child("Select a file to view its changes")));
   }
 
   // Rows are drawn inside the list's layout pass, where handlers throw; clicks arrive here by row key.
+  // A split line has one key for both sides, so a click takes its new side.
   clickRow(key, cx) {
     if (!key.startsWith("r")) return;
-    this.area = "diff"; this.cursor = Number(key.slice(1)); this.handle.focus();
+    const [left, right] = key.slice(1).split(":");
+    this.area = "diff"; this.cursor = Number(right || left); this.handle.focus();
     cx.notify();
   }
 
-  diffRow(t, row, i, sel, commented, m) {
+  diffRow(t, i, sel, commented, m) {
+    const row = this.diff.rows[i];
     if (row.kind === "hunk") {
       return h_flex().id(`row-${i}`).w_full().h(m.row).flex_none().px(12).bg(t.raised).text_color(t.dim)
         .when(this.area === "diff" && this.cursor === i, (e) => e.bg(t.selected))
         .child(div().truncate().child(row.text));
     }
-    const runs = this.hl?.runs(i) ?? [{ text: row.text, scope: null }];
-    const bg = this.area === "diff" && this.cursor === i ? t.selected
-      : sel && sel.from <= i && i <= sel.to ? t.selection
-      : row.kind === "add" ? t.ansi2 + "18" : row.kind === "del" ? t.ansi1 + "18" : null;
+    const bg = this.rowBg(t, row, i, sel);
     return h_flex().id(`row-${i}`).w_full().h(m.row).flex_none().gap(8).when(Boolean(bg), (e) => e.bg(bg))
-      .child(div().w(3).h_full().flex_none().when(commented, (e) => e.bg(t.accent)))
+      .child(div().w(3).h_full().flex_none().when(commented.has(i), (e) => e.bg(t.accent)))
       .child(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(row.old === null ? "" : String(row.old)))
       .child(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(row.new === null ? "" : String(row.new)))
-      .child(div().w(10).flex_none().text_color(row.kind === "add" ? t.ansi2 : row.kind === "del" ? t.ansi1 : t.dim)
-        .child(row.kind === "add" ? "+" : row.kind === "del" ? "−" : ""))
-      .child(h_flex().flex_1().min_w(0).children(runs.map((r) => {
+      .children(this.rowText(t, row, i));
+  }
+
+  // One side of a split line: its line number, sign, and text, or a blank where the other side has more lines.
+  halfRow(t, i, side, sel, commented, m, width) {
+    const cell = h_flex().w(width).h_full().flex_none().gap(8).overflow_hidden();
+    if (i === null) return cell.bg(t.raised);
+    const row = this.diff.rows[i], bg = this.rowBg(t, row, i, sel), number = row[side];
+    return cell.when(Boolean(bg), (e) => e.bg(bg))
+      .child(div().w(3).h_full().flex_none().when(commented.has(i), (e) => e.bg(t.accent)))
+      .child(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(number === null ? "" : String(number)))
+      .children(this.rowText(t, row, i));
+  }
+
+  rowBg(t, row, i, sel) {
+    return this.area === "diff" && this.cursor === i ? t.selected
+      : sel && sel.from <= i && i <= sel.to ? t.selection
+      : row.kind === "add" ? t.ansi2 + "18" : row.kind === "del" ? t.ansi1 + "18" : null;
+  }
+
+  rowText(t, row, i) {
+    const runs = this.hl?.runs(i) ?? [{ text: row.text, scope: null }];
+    return [
+      div().w(10).flex_none().text_color(row.kind === "add" ? t.ansi2 : row.kind === "del" ? t.ansi1 : t.dim)
+        .child(row.kind === "add" ? "+" : row.kind === "del" ? "−" : ""),
+      h_flex().flex_1().min_w(0).children(runs.map((r) => {
         const color = r.scope ? colorFor(r.scope, t) : null;
         return div().flex_none().when(Boolean(color), (e) => e.text_color(/** @type {any} */ (color))).child(r.text);
-      })));
+      })),
+    ];
   }
 
   commentRow(t, it, m) {
@@ -891,14 +933,16 @@ export default class Reviewer extends View {
     }
     return h_flex().flex_none().h(28).px(12).gap(12).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
       .child(div().flex_1().min_w(0).truncate().text_color(this.error ? t.blocked : this.notice ? t.foreground : t.dim)
-        .child(this.error ?? this.notice ?? "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/t/g scope · o session · B base · G commits · l layout · z tree"));
+        .child(this.error ?? this.notice ?? "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/t/g scope · o session · B base · G commits · l layout · z tree · w split"));
   }
 }
 
-// The diff rows behind a visible range of list items, for coloring those first.
+// The diff rows behind a visible range of list items, for coloring those first: one span per
+// side, since one span over a split block would take in its rows off screen too.
 function rowRange(items, range) {
-  const rows = items.slice(range.start, range.end).filter((it) => it.row !== undefined).map((it) => it.row);
-  return rows.length ? { start: rows[0], end: rows[rows.length - 1] + 1 } : { start: 0, end: 0 };
+  const shown = items.slice(range.start, range.end).filter((it) => !it.comment);
+  return ["left", "right"].map((side) => shown.map((it) => it[side]).filter((i) => i !== null))
+    .filter((rows) => rows.length).map((rows) => ({ start: Math.min(...rows), end: Math.max(...rows) + 1 }));
 }
 
 function button(t, id, label, onClick) {

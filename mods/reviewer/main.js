@@ -13,7 +13,7 @@ import { commitOf, defaultBase, listBranches, listCommits, orderRun } from "./re
 import { Turns, createTracker, workState } from "./turns.js";
 import { fileRows } from "./tree.js";
 import { lastLine, splitLines } from "./split.js";
-import { findRows, markRuns, nextMatch } from "./find.js";
+import { findRows, markRuns, nextMatch, searchFiles } from "./find.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
@@ -28,8 +28,12 @@ const KEYS = {
   j: "down", k: "up", "]": "next-change", "[": "prev-change", f: "next-file", F: "prev-file", tab: "switch-area",
   v: "select", c: "comment", e: "edit", d: "delete", y: "copy", s: "send", l: "layout", escape: "cancel",
   u: "scope-uncommitted", b: "scope-branch", t: "scope-turn", g: "scope-commits", B: "pick-base", G: "pick-commits",
-  o: "session-only", z: "file-view", w: "diff-view", m: "markdown", "/": "find", n: "next-match", N: "prev-match",
+  o: "session-only", z: "file-view", w: "diff-view", m: "markdown", "/": "find", n: "next-match", N: "prev-match", p: "find-file", P: "search-code",
 };
+// Code search holds every listed diff in memory and filters it on each keystroke; past this many
+// rows one filter pass could run into the script time limit.
+const SEARCH_ROWS = 100000;
+const SEARCH_HITS = 200;
 const WATCH_KEY = "reviewer.watch";
 const LAYOUT_KEY = "reviewer.layout";
 const BASES_KEY = "reviewer.bases";
@@ -98,7 +102,7 @@ export default class Reviewer extends View {
     this.finder = InputState.new({ placeholder: "Find in this diff: Enter keeps the matches, Esc clears them" });
     this.finder.on("change", (_e, cx) => this.findTyped(cx));
     this.finder.on("submit", (_e, cx) => this.closeFind(false, cx));
-    this.findOpen = false; this.findQuery = ""; this.findFrom = 0;
+    this.findOpen = false; this.findQuery = ""; this.findFrom = 0; this.pendingRow = null;
     this.query = ""; this.chooser = null; this.scopeKind = "uncommitted"; this.commitPick = null;
     this.collapsed = new Set();
     this.scope = null; this.files = []; this.selected = null; this.diff = null; this.hl = null; this.hlGen = 0;
@@ -252,7 +256,9 @@ export default class Reviewer extends View {
     const label = entry.key ? entry.label : this.scope.repos.find((r) => r.root === entry.root)?.label ?? null;
     const scope = { key: entry.key ?? this.keyFor(entry.root), label, range: entry.range };
     this.setDiff({ key: this.selected, root: entry.root, path: entry.file.path, scope, untracked: entry.file.untracked, text, ...result }, cx);
-    this.cursor = moveLine(this.diff.rows, this.cursor, 0);
+    // A search hit opens its file with the cursor on the matching row.
+    this.cursor = moveLine(this.diff.rows, this.pendingRow ?? this.cursor, 0);
+    if (this.pendingRow !== null) { this.pendingRow = null; this.reveal(); }
   }
 
   setDiff(diff, cx) {
@@ -422,7 +428,7 @@ export default class Reviewer extends View {
     this.filter.set_value("");
     this.filter.focus();
     cx.spawn(async (cx) => {
-      try { if (this.chooser === c) Object.assign(c, await load()); }
+      try { if (this.chooser === c) Object.assign(c, await load(cx, c)); }
       catch (e) { if (this.chooser === c) { this.closeChooser(cx); this.say(String(e), cx); } }
       cx.notify();
     });
@@ -462,9 +468,40 @@ export default class Reviewer extends View {
     }, cx);
   }
 
+  openFilePicker(cx) {
+    if (!this.files.length) { this.say("No files to pick from", cx); return; }
+    this.openChooser({ kind: "files", several: this.watchedRoots().length > 1 }, async () => ({ items: this.shownFiles(new Set()) }), cx);
+  }
+
+  // Reads every listed file's diff once, in waves, so typing then filters in memory.
+  openCodeSearch(cx) {
+    const entries = this.files.filter((f) => !f.file.binary);
+    if (!entries.length) { this.say("No changed lines to search", cx); return; }
+    this.openChooser({ kind: "code", total: entries.length, read: 0 }, async (cx, c) => {
+      const items = [];
+      let rows = 0;
+      for (let i = 0; i < entries.length && rows < SEARCH_ROWS; i += 16) {
+        const wave = await Promise.all(entries.slice(i, i + 16).map(async (entry) =>
+          ({ entry, rows: (await fileDiff(entry.root, entry.file, run_exec, readText, entry.range).catch(() => ({ rows: [] }))).rows })));
+        if (this.chooser !== c) return {};
+        items.push(...wave); rows += wave.reduce((n, w) => n + w.rows.length, 0);
+        c.read = items.length; cx.notify();
+      }
+      return { items, cut: items.length < entries.length };
+    }, cx);
+  }
+
   chooserRows() {
     const c = this.chooser, q = this.query.toLowerCase();
     if (!c?.items) return [];
+    if (c.kind === "files") {
+      const terms = q.split(/\s+/).filter(Boolean);
+      return c.items.filter((f) => terms.every((term) => `${repoName(f.root)}/${f.file.path}`.toLowerCase().includes(term)));
+    }
+    if (c.kind === "code") {
+      if (c.found?.query !== this.query) c.found = { query: this.query, ...searchFiles(c.items, this.query, SEARCH_HITS) };
+      return c.found.hits;
+    }
     if (c.kind === "commits") return c.items.filter((x) => `${x.short} ${x.subject} ${repoName(x.root)}`.toLowerCase().includes(q));
     const rows = c.items.filter((b) => b.name.toLowerCase().includes(q));
     return this.query && !c.items.some((b) => b.name === this.query) ? [...rows, { typed: this.query }] : rows;
@@ -479,6 +516,8 @@ export default class Reviewer extends View {
     const c = this.chooser, row = c && this.chooserRows()[c.at];
     if (!row) return;
     if (c.kind === "base") { this.chooseBase(c, row.typed ?? row.name, cx); return; }
+    if (c.kind === "files") { this.openFile(row, null, cx); return; }
+    if (c.kind === "code") { this.findQuery = this.query; this.openFile(row.entry, row.row, cx); return; }
     if (shift) { c.mark = row; this.say(`Run starts at ${row.short}; press Enter on its other end`, cx); return; }
     if (c.mark && c.mark.root !== row.root) { this.say("A run stays in one repo; pick its other end there", cx); return; }
     cx.spawn(async (cx) => {
@@ -501,6 +540,20 @@ export default class Reviewer extends View {
       this.closeChooser(cx);
       this.setScope("branch", cx);
     });
+  }
+
+  // Shows a file a search picked, opening its repo and folders, with the cursor on `row` if given.
+  openFile(entry, row, cx) {
+    const group = entry.key ? "earlier" : entry.orphan ? "orphans" : entry.root;
+    for (const key of [...this.collapsed]) {
+      const folder = key.startsWith(`${group}\0`) && key.slice(group.length + 1);
+      if (key === group || (folder && entry.file.path.startsWith(`${folder}/`))) this.collapsed.delete(key);
+    }
+    this.notice = null;
+    this.closeChooser(cx);
+    this.area = row === null ? "files" : "diff";
+    if (entryKey(entry) !== this.selected) { this.select(entry, cx); this.pendingRow = row; }
+    else if (row !== null && this.diff) { this.cursor = moveLine(this.diff.rows, row, 0); this.reveal(); }
   }
 
   // ── Keyboard ───────────────────────────────────────────────────────────
@@ -567,12 +620,15 @@ export default class Reviewer extends View {
       "chooser-mark": () => this.choose(true, cx),
       cancel: () => { this.sel = null; this.picking = null; this.notice = null; this.findQuery = ""; if (this.chooser) this.closeChooser(cx); if (this.findOpen) this.closeFind(true, cx); },
       find: () => this.openFind(cx),
+      "find-file": () => this.openFilePicker(cx),
+      "search-code": () => this.openCodeSearch(cx),
       "next-match": () => this.jumpMatch(1, cx),
       "prev-match": () => this.jumpMatch(-1, cx),
       dump: () => this.dump(),
       // Test seam, with dump: stands in for typing into the comment box and pressing Enter.
       "test-type": () => { if (props()?.dump && this.box) this.input.set_value(`test comment ${this.nextId}`); },
       "test-enter": () => { if (props()?.dump) this.saveComment(cx); },
+      "test-filter": () => { if (props()?.dump && this.chooser) { this.filter.set_value(String(props().find ?? "")); this.query = this.filter.value().trim(); } },
       "test-find": () => { if (props()?.dump && this.findOpen) { this.finder.set_value(String(props().find ?? "")); this.findTyped(cx); } },
     };
     // The rendered file has no diff rows to anchor a comment to.
@@ -601,7 +657,9 @@ export default class Reviewer extends View {
       list: (({ repos, kept }) => [...repos, ...kept].flatMap((g) => g.rows.map((r) => "  ".repeat(r.depth) + (r.dir ? `${r.name}/${r.closed ? ` (${r.count})` : ""}` : r.prefix + r.name))))(this.groups()), labels: this.scope?.repos?.map((r) => ({ root: r.root, label: r.label, missing: r.missing, problem: r.problem })),
       chooser: this.chooser && {
         kind: this.chooser.kind, root: this.chooser.root, at: this.chooser.at, mark: this.chooser.mark?.short ?? null,
-        rows: this.chooserRows().map((r) => r.typed ?? r.name ?? `${repoName(r.root)} ${r.short} ${r.subject}`),
+        rows: this.chooserRows().map((r) => this.chooser.kind === "files" ? r.file.path : this.chooser.kind === "code" ? `${r.entry.file.path}:${r.row}`
+          : r.typed ?? r.name ?? `${repoName(r.root)} ${r.short} ${r.subject}`),
+        read: this.chooser.read, cut: this.chooser.cut, more: this.chooser.found?.more,
       },
     };
     writeTextFile(`${path}-${Date.now()}.json`, JSON.stringify(state, null, 1), null);
@@ -962,12 +1020,20 @@ export default class Reviewer extends View {
   chooserView(t) {
     const c = this.chooser, rows = this.chooserRows(), shown = 10;
     const at = Math.min(c.at, rows.length - 1), start = Math.max(0, Math.min(at - 4, rows.length - shown));
-    const title = c.kind === "base"
-      ? `Base for ${repoName(c.root)}: type a branch or any revision, Enter to pick, Esc to cancel`
-      : "Pick a commit: Enter picks it, Shift+Enter marks one end of a run, Esc to cancel";
+    const title = {
+      base: () => `Base for ${repoName(c.root)}: type a branch or any revision, Enter to pick, Esc to cancel`,
+      commits: () => "Pick a commit: Enter picks it, Shift+Enter marks one end of a run, Esc to cancel",
+      files: () => "Go to a changed file: type parts of its path, Enter opens it, Esc to cancel",
+      code: () => "Search the changed lines of every listed file: Enter opens the match, Esc to cancel",
+    }[c.kind]();
     const picked = bases()[c.root];
     const row = (r, i) => {
       const body = r.typed !== undefined ? [div().flex_1().min_w(0).truncate().child(`Use revision "${r.typed}"`)]
+        : c.kind === "files" ? [
+          div().w(12).flex_none().text_size(11).text_color(t.dim).child(r.file.status),
+          div().flex_1().min_w(0).truncate().child(r.file.path),
+          div().text_size(11).text_color(t.dim).child(c.several ? repoName(r.root) : ""),
+        ] : c.kind === "code" ? this.hitRow(t, r)
         : c.kind === "base" ? [
           div().flex_1().min_w(0).truncate().child(r.name),
           div().text_size(11).text_color(t.dim).child([r.name === c.defaultName && "default", r.name === picked && "picked", r.age].filter(Boolean).join(" · ")),
@@ -987,9 +1053,20 @@ export default class Reviewer extends View {
       .child(div().text_size(11).text_color(this.notice ? t.foreground : t.muted).child(this.notice ?? title))
       .child(div().id("chooser-box").h(30).px(8).flex().items_center().rounded(6).border_1().border_color(t.accent)
         .child(Input.new(this.filter).h_full().text_size(12).text_color(t.foreground)))
-      .when(!c.items, (e) => e.child(note(t, "Loading…")))
-      .when(Boolean(c.items) && !rows.length, (e) => e.child(note(t, "No matches")))
-      .children(rows.slice(start, start + shown).map(row));
+      .when(!c.items, (e) => e.child(note(t, c.kind === "code" ? `Reading the changed files: ${c.read} of ${c.total}` : "Loading…")))
+      .when(Boolean(c.items) && !rows.length, (e) => e.child(note(t, c.kind === "code" && !this.query ? `Type to search ${c.items.length} files` : "No matches")))
+      .children(rows.slice(start, start + shown).map(row))
+      .when(Boolean(c.cut || c.found?.more), (e) => e.child(note(t, [c.found?.more && `Showing the first ${SEARCH_HITS} matches`,
+        c.cut && `searched the first ${c.items.length} of ${c.total} files`].filter(Boolean).join("; "))));
+  }
+
+  hitRow(t, { entry, rows, row }) {
+    const r = rows[row];
+    return [
+      div().flex_none().text_size(11).text_color(t.dim).child(`${entry.file.path}:${r.new ?? r.old}`),
+      div().w(10).flex_none().text_color(r.kind === "add" ? t.ansi2 : r.kind === "del" ? t.ansi1 : t.dim).child(r.kind === "add" ? "+" : r.kind === "del" ? "−" : ""),
+      div().flex_1().min_w(0).truncate().child(r.text.trim()),
+    ];
   }
 
   footer(t) {
@@ -1021,7 +1098,7 @@ export default class Reviewer extends View {
     }
     return h_flex().flex_none().h(28).px(12).gap(12).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
       .child(div().flex_1().min_w(0).truncate().text_color(this.error ? t.blocked : this.notice ? t.foreground : t.dim)
-        .child(this.error ?? this.notice ?? (this.findQuery && this.diff ? `Find "${this.findQuery}": ${this.findStatus()} · n/N next/previous · Esc clears` : "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/t/g scope · o session · B base · G commits · l layout · z tree · w split · m markdown · / find")));
+        .child(this.error ?? this.notice ?? (this.findQuery && this.diff ? `Find "${this.findQuery}": ${this.findStatus()} · n/N next/previous · Esc clears` : "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/t/g scope · o session · B base · G commits · l layout · z tree · w split · m markdown · / find · p file · P search")));
   }
 }
 

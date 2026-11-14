@@ -56,12 +56,17 @@ test("searchFiles: hits across files in file order, skipping hunk headers", () =
     { entry: "a.js", rows: [{ kind: "hunk", text: "@@ foo" }, { kind: "add", text: "foo()" }, { kind: "ctx", text: "x" }] },
     { entry: "b.js", rows: [{ kind: "del", text: "FOO" }] },
   ];
-  assert.deepEqual(searchFiles(files, "foo", 10), { hits: [{ entry: "a.js", row: 1 }, { entry: "b.js", row: 0 }], more: false });
+  const { hits, more } = searchFiles(files, "foo", 10);
+  assert.deepEqual(hits.map(({ entry, row }) => [entry, row]), [["a.js", 1], ["b.js", 0]]);
+  assert.equal(hits[1].rows, files[1].rows);
+  assert.equal(more, false);
 });
 
 test("searchFiles: stops at the limit and says more were left", () => {
   const files = [{ entry: "a", rows: [{ kind: "add", text: "x" }, { kind: "add", text: "x" }, { kind: "add", text: "x" }] }];
-  assert.deepEqual(searchFiles(files, "x", 2), { hits: [{ entry: "a", row: 0 }, { entry: "a", row: 1 }], more: true });
+  const { hits, more } = searchFiles(files, "x", 2);
+  assert.deepEqual(hits.map(({ entry, row }) => [entry, row]), [["a", 0], ["a", 1]]);
+  assert.equal(more, true);
 });
 
 test("searchFiles: exactly the limit leaves nothing more", () => {

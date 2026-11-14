@@ -23,8 +23,8 @@ export function nextMatch(matches, from, dir) {
 }
 
 /**
- * Rows holding `query` across several files' diffs, in file order. Stops after `limit` hits
- * and says whether more were left.
+ * Rows holding `query` across several files' diffs, in file order; each hit carries its file's
+ * rows. Stops after `limit` hits and says whether more were left.
  * @template T @param {{ entry: T, rows: { kind: string, text: string }[] }[]} files
  */
 export function searchFiles(files, query, limit) {
@@ -34,7 +34,7 @@ export function searchFiles(files, query, limit) {
     for (const row of findRows(rows, query)) {
       if (rows[row].kind === "hunk") continue;
       if (hits.length === limit) return { hits, more: true };
-      hits.push({ entry, row });
+      hits.push({ entry, rows, row });
     }
   }
   return { hits, more: false };

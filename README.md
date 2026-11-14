@@ -46,6 +46,11 @@ after the changes, in place of its diff; `m` again brings the diff back. It stay
 between files, and other files keep showing their diff. Comments go on the diff, so `v`, `c`, `e`,
 and `d` ask you to switch back first.
 
+**Find in the diff.** `/` opens a find box under the diff. As you type, the cursor jumps to the
+first match and every match is marked; case is ignored. Enter closes the box and keeps the
+matches; `n` and `N` go to the next and previous one, wrapping around, also in other files you
+open. `Esc` clears them. Find looks at the lines the diff shows, not the whole file.
+
 **Scopes.** The buttons under the header, or `u`, `b`, `t`, and `g`, choose what the pane diffs:
 
 - **Uncommitted** (`u`), the default: changes since the last commit.
@@ -103,10 +108,12 @@ several agents in the tab, a picker asks which one. Sending clears the comments.
 | `u` / `b` / `t` / `g` | Scope: uncommitted / branch / last turn / commits |
 | `o` | Show only this session's files, or all files |
 | `m` | Show a Markdown file rendered, or its diff |
+| `/` | Find in the diff |
+| `n` / `N` | Next / previous match |
 | `w` | Switch the diff between one column and old beside new (kept for every reviewer, across restarts) |
 | `z` | Switch the file list between a folder tree and a flat list (kept for every reviewer, across restarts) |
 | `B` / `G` | Pick the base branch / pick commits |
-| `Esc` | Clear the selection, or cancel the comment box or a picker |
+| `Esc` | Clear the selection and the find matches, or cancel the comment box or a picker |
 | `Enter` | Save the comment box, or choose in a picker |
 | `↑` / `↓` | Move in a picker |
 | `Shift+Enter` | Mark one end of a run in the commit picker |
@@ -120,7 +127,7 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 `reviewer.comment`, `reviewer.edit`, `reviewer.delete`, `reviewer.copy`, `reviewer.send`,
 `reviewer.layout`, `reviewer.cancel`, `reviewer.scope-uncommitted`, `reviewer.scope-branch`,
 `reviewer.scope-turn`, `reviewer.scope-commits`, `reviewer.session-only`, `reviewer.pick-base`,
-`reviewer.pick-commits`, `reviewer.file-view`, `reviewer.diff-view`, `reviewer.markdown`, and
+`reviewer.pick-commits`, `reviewer.file-view`, `reviewer.diff-view`, `reviewer.markdown`, `reviewer.find`, `reviewer.next-match`, `reviewer.prev-match`, and
 `reviewer.toggle-repo` (collapses or expands the selected file's repo; no key by default).
 
 ## What it runs and reads

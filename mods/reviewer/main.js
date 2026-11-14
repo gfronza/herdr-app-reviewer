@@ -13,6 +13,7 @@ import { commitOf, defaultBase, listBranches, listCommits, orderRun } from "./re
 import { Turns, createTracker, workState } from "./turns.js";
 import { fileRows } from "./tree.js";
 import { lastLine, splitLines } from "./split.js";
+import { findRows, markRuns, nextMatch } from "./find.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
@@ -27,7 +28,7 @@ const KEYS = {
   j: "down", k: "up", "]": "next-change", "[": "prev-change", f: "next-file", F: "prev-file", tab: "switch-area",
   v: "select", c: "comment", e: "edit", d: "delete", y: "copy", s: "send", l: "layout", escape: "cancel",
   u: "scope-uncommitted", b: "scope-branch", t: "scope-turn", g: "scope-commits", B: "pick-base", G: "pick-commits",
-  o: "session-only", z: "file-view", w: "diff-view", m: "markdown",
+  o: "session-only", z: "file-view", w: "diff-view", m: "markdown", "/": "find", n: "next-match", N: "prev-match",
 };
 const WATCH_KEY = "reviewer.watch";
 const LAYOUT_KEY = "reviewer.layout";
@@ -94,6 +95,10 @@ export default class Reviewer extends View {
       cx.notify();
     });
     this.filter.on("submit", (e, cx) => this.choose(Boolean(e.shift), cx));
+    this.finder = InputState.new({ placeholder: "Find in this diff: Enter keeps the matches, Esc clears them" });
+    this.finder.on("change", (_e, cx) => this.findTyped(cx));
+    this.finder.on("submit", (_e, cx) => this.closeFind(false, cx));
+    this.findOpen = false; this.findQuery = ""; this.findFrom = 0;
     this.query = ""; this.chooser = null; this.scopeKind = "uncommitted"; this.commitPick = null;
     this.collapsed = new Set();
     this.scope = null; this.files = []; this.selected = null; this.diff = null; this.hl = null; this.hlGen = 0;
@@ -111,7 +116,7 @@ export default class Reviewer extends View {
     cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
-        if (command === "focus") (this.box ? this.input : this.chooser ? this.filter : this.handle).focus();
+        if (command === "focus") (this.box ? this.input : this.chooser ? this.filter : this.findOpen ? this.finder : this.handle).focus();
         else this.act(command, cx);
         cx.notify();
       }
@@ -321,6 +326,7 @@ export default class Reviewer extends View {
 
   openBox(cx, comment = null) {
     if (!this.diff?.rows.length) return;
+    this.findOpen = false;
     if (comment) this.box = { id: comment.id };
     else {
       const { from, to } = this.range() ?? { from: this.cursor, to: this.cursor };
@@ -410,6 +416,7 @@ export default class Reviewer extends View {
 
   openChooser(chooser, load, cx) {
     if (this.box) { this.say("Save or cancel the comment first", cx); return; }
+    this.findOpen = false;
     const c = { ...chooser, items: null, at: 0, mark: null };
     this.chooser = c; this.picking = null; this.notice = null; this.query = "";
     this.filter.set_value("");
@@ -503,6 +510,10 @@ export default class Reviewer extends View {
       if (e.key === "escape") { this.closeBox(cx); cx.stop_propagation(); }
       return;
     }
+    if (this.findOpen) {
+      if (e.key === "escape") { this.closeFind(true, cx); cx.stop_propagation(); }
+      return;
+    }
     // The filter box takes typing and Enter; the arrows and Esc reach here.
     if (this.chooser) {
       const action = { down: "chooser-next", up: "chooser-prev", escape: "cancel" }[e.key];
@@ -554,11 +565,15 @@ export default class Reviewer extends View {
       "chooser-prev": () => this.moveChooser(-1),
       "chooser-enter": () => this.choose(false, cx),
       "chooser-mark": () => this.choose(true, cx),
-      cancel: () => { this.sel = null; this.picking = null; this.notice = null; if (this.chooser) this.closeChooser(cx); },
+      cancel: () => { this.sel = null; this.picking = null; this.notice = null; this.findQuery = ""; if (this.chooser) this.closeChooser(cx); if (this.findOpen) this.closeFind(true, cx); },
+      find: () => this.openFind(cx),
+      "next-match": () => this.jumpMatch(1, cx),
+      "prev-match": () => this.jumpMatch(-1, cx),
       dump: () => this.dump(),
       // Test seam, with dump: stands in for typing into the comment box and pressing Enter.
       "test-type": () => { if (props()?.dump && this.box) this.input.set_value(`test comment ${this.nextId}`); },
       "test-enter": () => { if (props()?.dump) this.saveComment(cx); },
+      "test-find": () => { if (props()?.dump && this.findOpen) { this.finder.set_value(String(props().find ?? "")); this.findTyped(cx); } },
     };
     // The rendered file has no diff rows to anchor a comment to.
     if (this.markdownShown() && ["select", "comment", "edit", "delete"].includes(action)) { this.say("Comments go on the diff: press m to show it", cx); return; }
@@ -579,7 +594,7 @@ export default class Reviewer extends View {
       diff: this.diff && { path: this.diff.path, notice: this.diff.notice, cut: this.diff.cut, rows: this.diff.rows.length },
       colored: this.diff ? this.diff.rows.filter((_, i) => this.hl?.runs(i)).length : 0,
       comments: this.comments, items: this.layout().items.filter((it) => it.comment).map((it) => ({ id: it.comment.id, text: it.text, stale: it.stale })),
-      loading: Boolean(this.loadingSince), picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked", fileView: treeView() ? "tree" : "flat", diffView: splitDiff() ? "split" : "unified", rendered: this.markdownShown(), markdown: this.diff?.text?.length ?? null,
+      loading: Boolean(this.loadingSince), picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked", fileView: treeView() ? "tree" : "flat", diffView: splitDiff() ? "split" : "unified", rendered: this.markdownShown(), find: { open: this.findOpen, query: this.findQuery, matches: this.matches(), status: this.findStatus() }, markdown: this.diff?.text?.length ?? null,
       lines: this.layout().items.map((it) => (it.comment ? `# ${it.text}` : `${it.left ?? "-"}|${it.right ?? "-"}`)),
       scope: this.scopeKind, spec: this.spec, sessionOnly: this.sessionOnly, session: [...this.turns.session().files].map((k) => k.replace("\0", ":")),
       turnError: this.turnError, earlier: this.files.filter((f) => f.key).map((f) => `${f.key} ${f.file.path}`), collapsed: [...this.collapsed].map((k) => k.replace("\0", ":")),
@@ -643,6 +658,49 @@ export default class Reviewer extends View {
   reveal() {
     const item = this.layout().items.findIndex((it) => it.left === this.cursor || it.right === this.cursor);
     if (item >= 0) this.scroll.scroll_to_item(item);
+  }
+
+  // ── Find in the diff ───────────────────────────────────────────────────
+
+  openFind(cx) {
+    if (this.box || this.chooser) { this.say("Close the box below first", cx); return; }
+    if (this.markdownShown()) { this.say("Find works on the diff: press m to show it", cx); return; }
+    if (!this.diff?.rows.length) { this.say("No diff to find in", cx); return; }
+    this.findOpen = true; this.findFrom = this.cursor; this.notice = null;
+    this.finder.set_value(this.findQuery);
+    this.finder.focus();
+  }
+
+  // Each keystroke jumps to the first match at or after where the find started.
+  findTyped(cx) {
+    this.findQuery = this.finder.value();
+    const at = nextMatch(this.matches(), this.findFrom - 1, 1);
+    if (at >= 0) { this.area = "diff"; this.cursor = at; this.reveal(); }
+    cx.notify();
+  }
+
+  closeFind(clear, cx) {
+    this.findOpen = false;
+    if (clear) this.findQuery = "";
+    this.handle.focus();
+    cx.notify();
+  }
+
+  matches() {
+    return findRows(this.diff?.rows ?? [], this.findQuery);
+  }
+
+  jumpMatch(dir, cx) {
+    if (!this.findQuery) { this.say("Press / to find in the diff", cx); return; }
+    const at = nextMatch(this.matches(), this.cursor, dir);
+    if (at < 0) { this.say(`No match for "${this.findQuery}" in this file`, cx); return; }
+    this.area = "diff"; this.cursor = at; this.reveal();
+  }
+
+  // Where the cursor sits among the matches, as the footer shows it.
+  findStatus() {
+    const matches = this.matches(), k = matches.indexOf(this.cursor);
+    return matches.length ? `${k >= 0 ? `${k + 1} of ` : ""}${matches.length} match${matches.length === 1 ? "" : "es"}` : "no matches";
   }
 
   // ── Rendering ──────────────────────────────────────────────────────────
@@ -882,13 +940,14 @@ export default class Reviewer extends View {
   }
 
   rowText(t, row, i) {
-    const runs = this.hl?.runs(i) ?? [{ text: row.text, scope: null }];
+    const runs = markRuns(this.hl?.runs(i) ?? [{ text: row.text, scope: null }], this.findQuery);
     return [
       div().w(10).flex_none().text_color(row.kind === "add" ? t.ansi2 : row.kind === "del" ? t.ansi1 : t.dim)
         .child(row.kind === "add" ? "+" : row.kind === "del" ? "−" : ""),
       h_flex().flex_1().min_w(0).children(runs.map((r) => {
         const color = r.scope ? colorFor(r.scope, t) : null;
-        return div().flex_none().when(Boolean(color), (e) => e.text_color(/** @type {any} */ (color))).child(r.text);
+        return div().flex_none().when(Boolean(color), (e) => e.text_color(/** @type {any} */ (color)))
+          .when(Boolean(r.match), (e) => e.bg(/** @type {import("gpui-kit").Color} */ (`${t.accent}55`)).rounded(2)).child(r.text);
       })),
     ];
   }
@@ -944,6 +1003,13 @@ export default class Reviewer extends View {
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground)));
     }
+    if (this.findOpen) {
+      return v_flex().flex_none().p(8).gap(6).border_t(1).border_color(t.border)
+        .child(div().text_size(11).text_color(this.notice ? t.foreground : t.muted).child(this.notice ?? `Find in ${this.diff?.path ?? "the diff"}${this.findQuery ? `: ${this.findStatus()}` : ""}`))
+        .child(div().id("find-box").h(30).px(8).flex().items_center().rounded(6).border_1().border_color(t.accent)
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .child(Input.new(this.finder).h_full().text_size(12).text_color(t.foreground)));
+    }
     if (this.picking) {
       const list = this.picking.map((address) => agents().find((a) => a.address === address) ?? { address, app: null, title: "", status: "gone" });
       return v_flex().flex_none().p(8).gap(4).border_t(1).border_color(t.border)
@@ -955,7 +1021,7 @@ export default class Reviewer extends View {
     }
     return h_flex().flex_none().h(28).px(12).gap(12).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
       .child(div().flex_1().min_w(0).truncate().text_color(this.error ? t.blocked : this.notice ? t.foreground : t.dim)
-        .child(this.error ?? this.notice ?? "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/t/g scope · o session · B base · G commits · l layout · z tree · w split · m markdown"));
+        .child(this.error ?? this.notice ?? (this.findQuery && this.diff ? `Find "${this.findQuery}": ${this.findStatus()} · n/N next/previous · Esc clears` : "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/t/g scope · o session · B base · G commits · l layout · z tree · w split · m markdown · / find")));
   }
 }
 

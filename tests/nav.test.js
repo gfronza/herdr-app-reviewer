@@ -38,13 +38,33 @@ test("nextChange back stays put before the first block", () => {
   assert.equal(nextChange([], 0, -1), 0);
 });
 
-test("nextFile clamps at both ends and returns -1 for no files", () => {
-  const files = ["a", "b", "c"];
-  assert.equal(nextFile(files, 0, 1), 1);
-  assert.equal(nextFile(files, 2, 1), 2);
-  assert.equal(nextFile(files, 1, -1), 0);
-  assert.equal(nextFile(files, 0, -1), 0);
-  assert.equal(nextFile([], 0, 1), -1);
+test("nextFile steps to the neighbour and stays put at both ends", () => {
+  const shown = [true, true, true];
+  assert.equal(nextFile(shown, 0, 1), 1);
+  assert.equal(nextFile(shown, 2, 1), 2);
+  assert.equal(nextFile(shown, 1, -1), 0);
+  assert.equal(nextFile(shown, 0, -1), 0);
+});
+
+test("nextFile skips hidden files", () => {
+  assert.equal(nextFile([true, false, false, true], 0, 1), 3);
+  assert.equal(nextFile([true, false, false, true], 3, -1), 0);
+});
+
+test("nextFile from a hidden file goes on from where it sits", () => {
+  // l.js, src/s1.js and src/s2.js under a closed src/, z.js; s2.js was selected.
+  const shown = [true, false, false, true];
+  assert.equal(nextFile(shown, 2, 1), 3);
+  assert.equal(nextFile(shown, 2, -1), 0);
+});
+
+test("nextFile from a hidden file with nothing shown that way stays put", () => {
+  assert.equal(nextFile([true, false], 1, 1), -1);
+});
+
+test("nextFile with no selection picks the first shown file, or none", () => {
+  assert.equal(nextFile([false, true, true], -1, 1), 1);
+  assert.equal(nextFile([], -1, 1), -1);
 });
 
 test("selectionRange sorts its ends", () => {

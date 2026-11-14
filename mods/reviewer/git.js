@@ -185,3 +185,24 @@ export async function fileDiff(root, file, exec, readText, range) {
   if (!rows.length && /^Binary files /m.test(out)) return BINARY;
   return capRows(rows);
 }
+
+// readTextFile's limit, in bytes.
+const MAX_TEXT = 1024 * 1024;
+
+// The blob's size in bytes is asked first, so a large file is never read whole.
+async function blobText(root, object, exec) {
+  const size = await exec("git", [...READ, "cat-file", "-s", object], { cwd: root });
+  if (size.code !== 0 || Number(size.stdout) > MAX_TEXT) return null;
+  const blob = await exec("git", [...READ, "cat-file", "blob", object], { cwd: root });
+  return blob.code === 0 ? blob.stdout : null;
+}
+
+/**
+ * A file's text at the end of `range`, read from disk when that end is the working tree; null when
+ * it is gone there, binary, or over 1 MiB.
+ * @param {Range} [range]
+ */
+export async function fileText(root, path, exec, readText, range) {
+  const text = range?.to ? await blobText(root, `${range.to}:${path}`, withObjects(exec, range)) : await readText(`${root}/${path}`);
+  return isBinary(text) ? null : text;
+}

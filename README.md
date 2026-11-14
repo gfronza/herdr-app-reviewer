@@ -29,9 +29,35 @@ folder (its *base folder*). It stays bound to that folder when you focus other p
 key again to close it.
 
 The pane lists every uncommitted change: staged, unstaged, and untracked files, but not
-git-ignored ones. Changes are grouped by repo; click a repo's name to collapse or expand its
-files, and `f`/`F` skip the files of a collapsed repo. Select a file to see its diff. The list and the
-open diff update when files change on disk.
+git-ignored ones. Changes are grouped by repo, and each repo's files show as a folder tree:
+folders first, then files, and a folder holding only one folder shares its row (`src/app/`).
+Click a repo's name or a folder to collapse or expand it; `f`/`F` skip the files it hides. `z`
+switches between the tree and a flat list of paths; the choice is kept for every reviewer, across
+restarts. Select a file to see its diff. The list and the open diff update when files change on
+disk.
+
+**Split diff.** `w` shows the old code on the left and the new code on the right, each changed
+line beside its new version, and `w` again goes back to one column. The choice is kept for every
+reviewer, across restarts. Movement, selection, and comments work the same: `j`/`k` go through a
+changed block's removed lines, then its added ones. A click on a line selects its new side.
+
+**Rendered Markdown.** `m` shows a Markdown file (`.md`, `.markdown`) rendered, as it reads
+after the changes, in place of its diff; `m` again brings the diff back. It stays on as you move
+between files, and other files keep showing their diff. Opening a search match in a Markdown
+file (`P`, below) turns it off, to show the matching line. Comments go on the diff, so `v`, `c`, `e`,
+and `d` ask you to switch back first.
+
+**Find in the diff.** `/` opens a find box under the diff. As you type, the cursor jumps to the
+next match from where it was, wrapping around, and every match is marked; case is ignored. Enter closes the box and keeps the
+matches; `n` and `N` go to the next and previous one, wrapping around, also in other files you
+open. `Esc` clears them. Find looks at the lines the diff shows, not the whole file.
+
+**Search.** `p` lists the files in the pane; type parts of a path to narrow it, and Enter opens
+the file, expanding its repo and folders if they were collapsed. `P` searches the changed lines
+of every listed file, removed and context lines included, and Enter opens the match at its line,
+with the search text kept as the find text for `n`/`N`. Both search what the current scope lists,
+not the rest of the repo. Code search reads every listed diff when it opens; past 100,000 lines it
+says how many files it covered, and it shows the first 200 matches.
 
 **Scopes.** The buttons under the header, or `u`, `b`, `t`, and `g`, choose what the pane diffs:
 
@@ -89,9 +115,16 @@ several agents in the tab, a picker asks which one. Sending clears the comments.
 | `l` | Switch between stacked and side-by-side layout (kept for every reviewer, across restarts) |
 | `u` / `b` / `t` / `g` | Scope: uncommitted / branch / last turn / commits |
 | `o` | Show only this session's files, or all files |
+| `m` | Show a Markdown file rendered, or its diff |
+| `/` | Find in the diff |
+| `n` / `N` | Next / previous match |
+| `p` | Go to a listed file by name |
+| `P` | Search the changed lines of every listed file |
+| `w` | Switch the diff between one column and old beside new (kept for every reviewer, across restarts) |
+| `z` | Switch the file list between a folder tree and a flat list (kept for every reviewer, across restarts) |
 | `B` / `G` | Pick the base branch / pick commits |
-| `Esc` | Clear the selection, or cancel the comment box or a picker |
-| `Enter` | Save the comment box, or choose in a picker |
+| `Esc` | Clear the selection and the find matches, or cancel the comment box or a picker |
+| `Enter` | Save the comment box, close the find box, or choose in a picker |
 | `↑` / `↓` | Move in a picker |
 | `Shift+Enter` | Mark one end of a run in the commit picker |
 | `1`–`9` | Choose an agent in the send picker |
@@ -104,13 +137,14 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 `reviewer.comment`, `reviewer.edit`, `reviewer.delete`, `reviewer.copy`, `reviewer.send`,
 `reviewer.layout`, `reviewer.cancel`, `reviewer.scope-uncommitted`, `reviewer.scope-branch`,
 `reviewer.scope-turn`, `reviewer.scope-commits`, `reviewer.session-only`, `reviewer.pick-base`,
-`reviewer.pick-commits`, and
+`reviewer.pick-commits`, `reviewer.file-view`, `reviewer.diff-view`, `reviewer.markdown`, `reviewer.find`, `reviewer.next-match`, `reviewer.prev-match`, `reviewer.find-file`, `reviewer.search-code`, and
 `reviewer.toggle-repo` (collapses or expands the selected file's repo; no key by default).
 
 ## What it runs and reads
 
 - It runs `git` in each watched repo, read-only: `status`, `diff`, `ls-files`, `rev-parse`,
-  `merge-base`, `log`, `for-each-ref`, and `config` (to read `init.defaultBranch`), with
+  `merge-base`, `log`, `for-each-ref`, `cat-file` (to render a Markdown file as a commit or turn
+  holds it), and `config` (to read `init.defaultBranch`), with
   `--no-optional-locks` and settings that keep git from writing the index. It never stages,
   commits, or changes a file, the index, or a ref.
 - For Last turn and This session, it snapshots each watched repo when a turn starts: it copies the
@@ -121,7 +155,7 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
   `rm` on that folder only.
 - It reads the status of the agents in its tab.
 - It reads files outside its own folder: the files in the folders you watch, to show untracked
-  files and count their lines.
+  files, count their lines, and render Markdown files.
 - It watches those repos for changes on disk.
 - It writes the clipboard when you copy or send.
 - It reaches no network.
@@ -150,8 +184,6 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 
 Planned next, in this order. Plans may change.
 
-- **v1.3, reading comfort:** old and new code side by side in the diff; rendered Markdown; find
-  in file; search files by name and code by content.
 - **v1.4, durability and reach:** unsent comments that survive closing the pane; Linux and
   Windows tested; spaces on other machines.
 - **v2, beyond changes:** a tab with every file in the repo, and a tab for pull requests.

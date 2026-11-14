@@ -2,12 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { findRows, markRuns, nextMatch, searchFiles } from "../mods/reviewer/find.js";
 
-const rows = ["const Foo = 1;", "bar()", "return foo;", "@@ -1 +1 @@ foo"].map((text) => ({ text }));
+const rows = [["ctx", "const Foo = 1;"], ["ctx", "bar()"], ["add", "return foo;"], ["hunk", "@@ -1 +1 @@ foo"], ["del", "FOO"]]
+  .map(([kind, text]) => ({ kind, text }));
 // Each run as "text" or "[text]" when it is a match.
 const show = (runs) => runs.map((r) => (r.match ? `[${r.text}]` : r.text));
 
-test("findRows: rows holding the text, ignoring case", () => {
-  assert.deepEqual(findRows(rows, "FOO"), [0, 2, 3]);
+test("findRows: rows holding the text, ignoring case, but no hunk header", () => {
+  assert.deepEqual(findRows(rows, "FOO"), [0, 2, 4]);
 });
 
 test("findRows: an empty query or no hit finds nothing", () => {
@@ -15,8 +16,14 @@ test("findRows: an empty query or no hit finds nothing", () => {
   assert.deepEqual(findRows(rows, "zzz"), []);
 });
 
-test("findRows: a line that changes length when lowercased still matches with its case kept", () => {
-  assert.deepEqual(findRows([{ text: "İstanbul x" }, { text: "y" }], "x"), [0]);
+test("findRows: a line that changes length when lowercased matches with its case kept, any query case", () => {
+  const lines = [{ kind: "ctx", text: "İstanbul ABC" }, { kind: "ctx", text: "y" }];
+  assert.deepEqual(findRows(lines, "ABC"), [0]);
+  assert.deepEqual(findRows(lines, "abc"), []);
+});
+
+test("markRuns: a line that changes length when lowercased marks the match at its true place", () => {
+  assert.deepEqual(show(markRuns([{ text: "İstanbul x", scope: null }], "x")), ["İstanbul ", "[x]"]);
 });
 
 test("nextMatch: forward from a row finds the next match and wraps to the first", () => {

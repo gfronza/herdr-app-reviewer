@@ -1,17 +1,20 @@
 // Find in the open diff. Matching ignores case.
 
-// A few characters change length when lowercased (İ), which would shift match positions;
-// such a line matches with its case kept.
-const fold = (s) => {
-  const lower = s.toLowerCase();
-  return lower.length === s.length ? lower : s;
-};
+// The text and query to compare, case folded. A few characters change length when lowercased (İ),
+// which would shift match positions; such a text or query is compared with its case kept.
+function folded(text, query) {
+  const t = text.toLowerCase(), q = query.toLowerCase();
+  return t.length === text.length && q.length === query.length ? [t, q] : [text, query];
+}
 
-/** Indexes of the rows whose text holds `query`. */
+/** Indexes of the rows whose text holds `query`. Hunk headers are left out: they are not marked. */
 export function findRows(rows, query) {
   if (!query) return [];
-  const q = fold(query), out = [];
-  rows.forEach((row, i) => { if (fold(row.text).includes(q)) out.push(i); });
+  const out = [];
+  rows.forEach((row, i) => {
+    const [t, q] = folded(row.text, query);
+    if (row.kind !== "hunk" && t.includes(q)) out.push(i);
+  });
   return out;
 }
 
@@ -32,7 +35,6 @@ export function searchFiles(files, query, limit) {
   if (!query) return { hits, more: false };
   for (const { entry, rows } of files) {
     for (const row of findRows(rows, query)) {
-      if (rows[row].kind === "hunk") continue;
       if (hits.length === limit) return { hits, more: true };
       hits.push({ entry, rows, row });
     }
@@ -42,7 +44,7 @@ export function searchFiles(files, query, limit) {
 
 /** A row's colored runs, cut where `query` starts and ends; the matched pieces carry `match: true`. */
 export function markRuns(runs, query) {
-  const text = runs.map((r) => r.text).join(""), q = fold(query ?? ""), lower = fold(text);
+  const text = runs.map((r) => r.text).join(""), [lower, q] = folded(text, query ?? "");
   const hits = [];
   if (q) for (let at = lower.indexOf(q); at >= 0; at = lower.indexOf(q, at + q.length)) hits.push([at, at + q.length]);
   if (!hits.length) return runs;

@@ -98,6 +98,8 @@ export default class Reviewer extends View {
     this.finder = InputState.new({ placeholder: "Find in this diff: Enter keeps the matches, Esc clears them" });
     this.finder.on("change", (_e, cx) => this.findTyped(cx));
     this.finder.on("submit", (_e, cx) => this.closeFind(false, cx));
+    // A press elsewhere takes the keyboard away from the box; closing it then keeps keys working.
+    this.finder.on("blur", (_e, cx) => { if (this.findOpen) this.closeFind(false, cx); });
     this.findOpen = false; this.findQuery = ""; this.findFrom = 0; this.pendingRow = null;
     this.query = ""; this.chooser = null; this.scopeKind = "uncommitted"; this.commitPick = null;
     this.collapsed = new Set();
@@ -638,7 +640,11 @@ export default class Reviewer extends View {
       "chooser-prev": () => this.moveChooser(-1),
       "chooser-enter": () => this.choose(false, cx),
       "chooser-mark": () => this.choose(true, cx),
-      cancel: () => { this.sel = null; this.picking = null; this.notice = null; this.findQuery = ""; if (this.chooser) this.closeChooser(cx); if (this.findOpen) this.closeFind(true, cx); },
+      cancel: () => {
+        this.sel = null; this.picking = null; this.notice = null;
+        if (this.chooser) this.closeChooser(cx);
+        else { this.findQuery = ""; if (this.findOpen) this.closeFind(true, cx); }
+      },
       find: () => this.openFind(cx),
       "find-file": () => this.openFilePicker(cx),
       "search-code": () => this.openCodeSearch(cx),
@@ -770,6 +776,7 @@ export default class Reviewer extends View {
 
   jumpMatch(dir, cx) {
     if (!this.findQuery) { this.say("Press / to find in the diff", cx); return; }
+    if (this.markdownShown()) { this.say("Find works on the diff: press m to show it", cx); return; }
     const at = nextMatch(this.matches(), this.cursor, dir);
     if (at < 0) { this.say(`No match for "${this.findQuery}" in this file`, cx); return; }
     this.area = "diff"; this.cursor = at; this.reveal();
@@ -1120,7 +1127,7 @@ export default class Reviewer extends View {
     }
     return h_flex().flex_none().h(28).px(12).gap(12).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
       .child(div().flex_1().min_w(0).truncate().text_color(this.error ? t.blocked : this.notice ? t.foreground : t.dim)
-        .child(this.error ?? this.notice ?? (this.findQuery && this.diff ? `Find "${this.findQuery}": ${this.findStatus()} · n/N next/previous · Esc clears` : "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/t/g scope · o session · B base · G commits · l layout · z tree · w split · m markdown · / find · p file · P search")));
+        .child(this.error ?? this.notice ?? (this.findQuery && this.diff && !this.markdownShown() ? `Find "${this.findQuery}": ${this.findStatus()} · n/N next/previous · Esc clears` : "j/k move · ]/[ change · f/F file · v select · c comment · y copy · s send · u/b/t/g scope · o session · B base · G commits · l layout · z tree · w split · m markdown · / find · p file · P search")));
   }
 }
 

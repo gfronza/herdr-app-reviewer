@@ -1,7 +1,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import {
-  agents, closeOverlay, exec, focused, nextCommand, panes, pickFolder, props, readTextFile, run,
+  agents, closeOverlay, exec, focused, layout, nextCommand, panes, pickFolder, props, readTextFile, run,
   setShared, settings, shared, theme as herdrTheme, watchFolder, writeTextFile,
 } from "herdr";
 import { collectScope, fileKey, MAX_FOLDERS, resolveRoots } from "./scope.js";
@@ -14,6 +14,7 @@ import { Turns, createTracker, workState } from "./turns.js";
 import { fileRows } from "./tree.js";
 import { lastLine, spans, splitLines } from "./split.js";
 import { findRows, markRuns, nextMatch, searchFiles } from "./find.js";
+import { ACTIONS_KEY, HEADS_KEY, headEntry, headerShowsControls, pruneHeads } from "./head.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
@@ -115,7 +116,7 @@ export default class Reviewer extends View {
       name: this.tab,
       keep: () => new Set([...this.comments, this.box?.draft].filter(Boolean).map((c) => turnOf(c.scope.key))),
     });
-    cx.timer.every(250, (cx) => this.followAgents(cx));
+    cx.timer.every(250, (cx) => { this.followAgents(cx); this.publishHead(); });
     cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
@@ -625,6 +626,7 @@ export default class Reviewer extends View {
       copy: () => this.copy(cx),
       send: () => this.send(cx),
       layout: () => setShared(LAYOUT_KEY, sideBySide() ? "stacked" : "side"),
+      folders: () => { this.view = this.view === "folders" ? "changes" : "folders"; },
       "scope-uncommitted": () => this.setScope("uncommitted", cx),
       "scope-branch": () => this.setScope("branch", cx),
       "scope-turn": () => this.setScope("turn", cx),
@@ -828,11 +830,13 @@ export default class Reviewer extends View {
   render(_cx) {
     if (props()?.overlay) return div();
     const t = theme();
+    // When the pane header draws the title and controls (see head.js), these rows would repeat them.
+    const rows = !this.ownPane() || !headerShowsControls(layout(), shared(ACTIONS_KEY));
     return v_flex().id("reviewer").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
       .track_focus(this.handle).on_mouse_down("left", () => this.handle.focus())
       .on_key_down((e, cx) => this.onKey(e, cx))
-      .child(this.header(t))
-      .when(this.view === "changes", (e) => e.child(this.toolbar(t)))
+      .when(rows, (e) => e.child(this.header(t)))
+      .when(rows && this.view === "changes", (e) => e.child(this.toolbar(t)))
       .child(this.view === "folders" ? this.foldersView(t) : this.changesView(t))
       .child(this.footer(t));
   }
@@ -844,7 +848,32 @@ export default class Reviewer extends View {
       .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(this.base ?? "No folder"))
       .when(unsent > 0, (e) => e.child(div().px(6).rounded(4).bg(t.accent).text_color(t.accent_foreground).text_size(11).child(`${unsent} unsent`)))
 
-      .child(button(t, "folders", this.view === "folders" ? "Changes" : "Folders", (cx) => { this.view = this.view === "folders" ? "changes" : "folders"; cx.notify(); }));
+      .child(button(t, "folders", this.view === "folders" ? "Changes" : "Folders", (cx) => this.act("folders", cx)));
+  }
+
+  // The tab finds the pane: opening a reviewer closes the tab's others first.
+  ownPane() { return panes().find((p) => p.mod === "reviewer" && p.tab === this.tab)?.pane; }
+
+  // Written from the 250 ms timer, and only on a change: setShared re-renders every mod.
+  publishHead() {
+    const pane = this.ownPane();
+    if (!pane) return;
+    this.headPane = pane;
+    const head = headEntry({
+      base: this.base ?? null, unsent: this.comments.length, view: this.view,
+      scope: this.scopeKind, sessionOnly: this.sessionOnly, sideBySide: sideBySide(),
+    });
+    const heads = /** @type {Record<string, unknown>} */ (shared(HEADS_KEY) ?? {});
+    if (JSON.stringify(heads[pane]) === JSON.stringify(head)) return;
+    setShared(HEADS_KEY, { ...pruneHeads(heads, new Set(panes().map((p) => p.pane))), [pane]: head });
+  }
+
+  // Herdr calls this when the pane goes; the pruning above covers a crash.
+  async close() {
+    const heads = /** @type {Record<string, unknown>} */ (shared(HEADS_KEY) ?? {});
+    if (!this.headPane || !(this.headPane in heads)) return;
+    const { [this.headPane]: _, ...rest } = heads;
+    setShared(HEADS_KEY, rest);
   }
 
   // Its own row: beside the header's buttons, the scope tabs ran off a half-width pane.

@@ -122,7 +122,7 @@ several agents in the tab, a picker asks which one. Sending clears the comments.
 | `n` / `N` | Next / previous match |
 | `p` | Go to a listed file by name |
 | `P` | Search the changed lines of every listed file |
-| `w` | Switch the diff between one column and old beside new (kept for every reviewer, across restarts) |
+| `w` | Switch the diff between one column and old beside new (kept for every reviewer, across restarts); beside, each side takes half the pane and cuts long lines unless they wrap |
 | `z` | Switch the file list between a folder tree and a flat list (kept for every reviewer, across restarts) |
 | `B` / `G` | Pick the base branch / pick commits |
 | `Esc` | Clear the selection and the find matches, or cancel the comment box or a picker |

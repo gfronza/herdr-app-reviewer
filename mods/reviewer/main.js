@@ -1003,31 +1003,32 @@ export default class Reviewer extends View {
     if (this.markdownShown()) return this.markdownView(t);
     const diff = this.diff, { items, commented } = this.layout(), m = diffMetrics(), split = splitDiff();
     const longest = Math.max(0, ...(diff?.rows ?? []).map((r) => r.text.length * m.char));
-    // A split line gives each side the same width, so both sides' columns line up.
-    const half = longest + m.gutter + 37, width = Math.max(300, split ? 2 * half : longest + 2 * m.gutter + 45);
+    // Split, each side takes half the pane, so both stay on screen; a longer line is cut at its edge.
+    const width = Math.max(300, longest + 2 * m.gutter + 45);
     // Wrapped, a row breaks at the columns its text has (less two for the scrollbar), and takes one
-    // row height per screen line, so the list still scrolls to any row.
-    const wrap = wrapLines() && !split;
+    // row height per screen line (a split line, its longer side's), so the list still scrolls to any row.
+    const wrap = wrapLines();
     const cols = wrap && this.textWidth && this.charWidth ? Math.floor(this.textWidth / this.charWidth) - 2 : 0;
-    const heights = cols ? items.map((it) => it.comment || diff.rows[it.right].kind === "hunk" ? m.row
-      : m.row * wrappedLines(diff.rows[it.right].text.length, cols)) : m.row;
+    const lines = (it) => (!cols || it.comment ? 1 : Math.max(...[it.left, it.right].map((i) =>
+      i === null || diff.rows[i].kind === "hunk" ? 1 : wrappedLines(diff.rows[i].text.length, cols))));
+    const heights = cols ? items.map((it) => m.row * lines(it)) : m.row;
     const sel = this.range();
     // overflow_x_scrollbar() wraps its child, so the flex size goes on a plain parent.
     return v_flex().flex_1().min_w(0).min_h(0).font_family(m.font).text_size(m.size)
       .when(Boolean(diff?.notice), (e) => e.child(div().p(12).text_color(t.dim).child(diff.notice)))
       .when(Boolean(diff?.cut), (e) => e.child(note(t, "Showing the first 1,500 lines")))
       .child(div().id("diff-area").flex_1().min_h(0).relative()
-        .when(wrap, (e) => e.child(this.wrapProbe(m)))
+        .when(wrap, (e) => e.child(this.wrapProbe(m, split)))
         .child(div().id("diff-x").size_full().overflow_x_scrollbar()
-        .child(div().w_full().min_w(cols ? 0 : width).h_full()
+        .child(div().w_full().min_w(split || cols ? 0 : width).h_full()
           .child(v_virtual_list("diff", items.length, heights, (i) => items[i].comment ? `c${items[i].comment.id}-${i}` : `r${items[i].left ?? ""}:${items[i].right ?? ""}`,
             (range) => {
               this.visible = rowRange(items, range);
               return items.slice(range.start, range.end).map((it) => it.comment ? this.commentRow(t, it, m)
                 : !split || diff.rows[it.left]?.kind === "hunk" ? this.diffRow(t, it.right, sel, commented, m, cols)
-                : h_flex().w_full().h(m.row).flex_none()
-                  .child(this.halfRow(t, it.left, "old", sel, commented, m, half))
-                  .child(this.halfRow(t, it.right, "new", sel, commented, m, half)));
+                : h_flex().w_full().h(m.row * lines(it)).flex_none()
+                  .child(this.halfRow(t, it.left, "old", sel, commented, m, cols))
+                  .child(this.halfRow(t, it.right, "new", sel, commented, m, cols)));
             }).track_scroll(this.scroll).on_item_click((key, cx) => this.clickRow(key, cx)).size_full())))
         .child(Scrollbar.vertical("diff").viewport_from_layout().absolute().inset_0()))
       .when(!diff && this.files.length > 0, (e) => e.child(div().px(12).py(6).text_color(t.dim).child("Select a file to view its changes")));
@@ -1036,11 +1037,15 @@ export default class Reviewer extends View {
   // The app zoom and the font's own metrics both change how many characters fit, so a hidden copy of
   // a row's fixed cells measures its text column, and a run of characters measures one, in the
   // same units. Keep the cells as diffRow draws them.
-  wrapProbe(m) {
+  // Keep the cells as diffRow and halfRow draw them.
+  wrapProbe(m, split) {
     const keep = (key, value, cx) => { if (value !== this[key]) { this[key] = value; cx.notify(); } };
-    return h_flex().absolute().top_0().left_0().w_full().h(0).overflow_hidden().gap(8)
-      .child(div().w(3).flex_none()).child(div().w(m.gutter).flex_none()).child(div().w(m.gutter).flex_none()).child(div().w(10).flex_none())
-      .child(div().id("wrap-text").flex_1().min_w(0).on_size_change((size, cx) => keep("textWidth", size.width, cx)))
+    const side = h_flex().flex_1().min_w(0).gap(8)
+      .child(div().w(3).flex_none()).child(div().w(m.gutter).flex_none())
+      .when(!split, (e) => e.child(div().w(m.gutter).flex_none())).child(div().w(10).flex_none())
+      .child(div().id("wrap-text").flex_1().min_w(0).on_size_change((size, cx) => keep("textWidth", size.width, cx)));
+    return h_flex().absolute().top_0().left_0().w_full().h(0).overflow_hidden()
+      .child(side).when(split, (e) => e.child(div().flex_1()))
       .child(div().id("wrap-char").absolute().whitespace_nowrap().child("0".repeat(100))
         .on_size_change((size, cx) => keep("charWidth", size.width / 100, cx)));
   }
@@ -1073,14 +1078,16 @@ export default class Reviewer extends View {
   }
 
   // One side of a split line: its line number, sign, and text, or a blank where the other side has more lines.
-  halfRow(t, i, side, sel, commented, m, width) {
-    const cell = h_flex().w(width).h_full().flex_none().gap(8).overflow_hidden();
+  // Wrapped, the line may be taller than this side, so its cells sit one line high at the top.
+  halfRow(t, i, side, sel, commented, m, cols) {
+    const cell = h_flex().flex_1().min_w(0).h_full().gap(8).overflow_hidden();
     if (i === null) return cell.bg(t.raised);
     const row = this.diff.rows[i], bg = this.rowBg(t, row, i, sel), number = row[side];
-    return cell.when(Boolean(bg), (e) => e.bg(bg))
+    const top = (e) => (cols ? e.h(m.row).flex().items_center().justify_end() : e);
+    return cell.when(cols > 0, (e) => e.items_start()).when(Boolean(bg), (e) => e.bg(bg))
       .child(div().w(3).h_full().flex_none().when(commented.has(i), (e) => e.bg(t.accent)))
-      .child(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(number === null ? "" : String(number)))
-      .children(this.rowText(t, row, i));
+      .child(top(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(number === null ? "" : String(number))))
+      .children(this.rowText(t, row, i, cols ? { cols, height: m.row } : null));
   }
 
   rowBg(t, row, i, sel) {

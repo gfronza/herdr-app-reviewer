@@ -139,7 +139,7 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 `reviewer.comment`, `reviewer.edit`, `reviewer.delete`, `reviewer.copy`, `reviewer.send`,
 `reviewer.layout`, `reviewer.cancel`, `reviewer.scope-uncommitted`, `reviewer.scope-branch`,
 `reviewer.scope-turn`, `reviewer.scope-commits`, `reviewer.session-only`, `reviewer.pick-base`,
-`reviewer.pick-commits`, `reviewer.file-view`, `reviewer.diff-view`, `reviewer.markdown`, `reviewer.find`, `reviewer.next-match`, `reviewer.prev-match`, `reviewer.find-file`, `reviewer.search-code`, and
+`reviewer.pick-commits`, `reviewer.file-view`, `reviewer.diff-view`, `reviewer.markdown`, `reviewer.find`, `reviewer.next-match`, `reviewer.prev-match`, `reviewer.find-file`, `reviewer.search-code`, `reviewer.folders`, and
 `reviewer.toggle-repo` (collapses or expands the selected file's repo; no key by default).
 
 ## What it runs and reads
@@ -160,6 +160,8 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
   files, count their lines, and render Markdown files.
 - It watches those repos for changes on disk.
 - It writes the clipboard when you copy or send.
+- It writes its title, folder and controls into the shared key `pane-heads`, under its pane id,
+  for a pane header mod that shows them. Each write drops the entries of panes that are gone.
 - It reaches no network.
 
 ## Limitations

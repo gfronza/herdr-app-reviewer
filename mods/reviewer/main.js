@@ -14,6 +14,7 @@ import { Turns, createTracker, workState } from "./turns.js";
 import { fileRows } from "./tree.js";
 import { lastLine, spans, splitLines } from "./split.js";
 import { findRows, markRuns, nextMatch, searchFiles } from "./find.js";
+import { HEADS_KEY, headEntry, pruneHeads } from "./head.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
@@ -115,7 +116,7 @@ export default class Reviewer extends View {
       name: this.tab,
       keep: () => new Set([...this.comments, this.box?.draft].filter(Boolean).map((c) => turnOf(c.scope.key))),
     });
-    cx.timer.every(250, (cx) => this.followAgents(cx));
+    cx.timer.every(250, (cx) => { this.followAgents(cx); this.publishHead(); });
     cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
@@ -625,6 +626,7 @@ export default class Reviewer extends View {
       copy: () => this.copy(cx),
       send: () => this.send(cx),
       layout: () => setShared(LAYOUT_KEY, sideBySide() ? "stacked" : "side"),
+      folders: () => { this.view = this.view === "folders" ? "changes" : "folders"; },
       "scope-uncommitted": () => this.setScope("uncommitted", cx),
       "scope-branch": () => this.setScope("branch", cx),
       "scope-turn": () => this.setScope("turn", cx),
@@ -844,7 +846,20 @@ export default class Reviewer extends View {
       .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(this.base ?? "No folder"))
       .when(unsent > 0, (e) => e.child(div().px(6).rounded(4).bg(t.accent).text_color(t.accent_foreground).text_size(11).child(`${unsent} unsent`)))
 
-      .child(button(t, "folders", this.view === "folders" ? "Changes" : "Folders", (cx) => { this.view = this.view === "folders" ? "changes" : "folders"; cx.notify(); }));
+      .child(button(t, "folders", this.view === "folders" ? "Changes" : "Folders", (cx) => this.act("folders", cx)));
+  }
+
+  // Written from the 250 ms timer, and only on a change: setShared re-renders every mod.
+  publishHead() {
+    const pane = panes().find((p) => p.mod === "reviewer" && p.tab === this.tab)?.pane;
+    if (!pane) return;
+    const head = headEntry({
+      base: this.base ?? null, unsent: this.comments.length, view: this.view,
+      scope: this.scopeKind, sessionOnly: this.sessionOnly, sideBySide: sideBySide(),
+    });
+    const heads = /** @type {Record<string, unknown>} */ (shared(HEADS_KEY) ?? {});
+    if (JSON.stringify(heads[pane]) === JSON.stringify(head)) return;
+    setShared(HEADS_KEY, { ...pruneHeads(heads, new Set(panes().map((p) => p.pane))), [pane]: head });
   }
 
   // Its own row: beside the header's buttons, the scope tabs ran off a half-width pane.

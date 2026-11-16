@@ -122,7 +122,7 @@ several agents in the tab, a picker asks which one. Sending clears the comments.
 | `n` / `N` | Next / previous match |
 | `p` | Go to a listed file by name |
 | `P` | Search the changed lines of every listed file |
-| `w` | Switch the diff between one column and old beside new (kept for every reviewer, across restarts) |
+| `w` | Switch the diff between one column and old beside new (kept for every reviewer, across restarts); beside, each side takes half the pane and cuts long lines unless they wrap |
 | `z` | Switch the file list between a folder tree and a flat list (kept for every reviewer, across restarts) |
 | `B` / `G` | Pick the base branch / pick commits |
 | `Esc` | Clear the selection and the find matches, or cancel the comment box or a picker |
@@ -139,7 +139,8 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 `reviewer.comment`, `reviewer.edit`, `reviewer.delete`, `reviewer.copy`, `reviewer.send`,
 `reviewer.layout`, `reviewer.cancel`, `reviewer.scope-uncommitted`, `reviewer.scope-branch`,
 `reviewer.scope-turn`, `reviewer.scope-commits`, `reviewer.session-only`, `reviewer.pick-base`,
-`reviewer.pick-commits`, `reviewer.file-view`, `reviewer.diff-view`, `reviewer.markdown`, `reviewer.find`, `reviewer.next-match`, `reviewer.prev-match`, `reviewer.find-file`, `reviewer.search-code`, `reviewer.folders`, and
+`reviewer.pick-commits`, `reviewer.file-view`, `reviewer.diff-view`, `reviewer.markdown`, `reviewer.find`, `reviewer.next-match`, `reviewer.prev-match`, `reviewer.find-file`, `reviewer.search-code`, `reviewer.folders`, `reviewer.wrap` (wraps long lines, kept for every
+reviewer across restarts; no key by default), and
 `reviewer.toggle-repo` (collapses or expands the selected file's repo; no key by default).
 
 ## What it runs and reads

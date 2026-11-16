@@ -15,6 +15,7 @@ import { fileRows } from "./tree.js";
 import { lastLine, spans, splitLines } from "./split.js";
 import { findRows, markRuns, nextMatch, searchFiles } from "./find.js";
 import { ACTIONS_KEY, HEADS_KEY, headEntry, headerShowsControls, pruneHeads } from "./head.js";
+import { wrapRuns, wrappedLines } from "./wrap.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
@@ -40,6 +41,7 @@ const LAYOUT_KEY = "reviewer.layout";
 const BASES_KEY = "reviewer.bases";
 const FILES_KEY = "reviewer.files";
 const DIFF_KEY = "reviewer.diff";
+const WRAP_KEY = "reviewer.wrap";
 const run_exec = (cmd, args, opts) => exec(cmd, args, { cwd: opts?.cwd });
 // readTextFile rejects on bytes that are not UTF-8; git.js expects null for an unreadable file.
 const readText = (path) => readTextFile(path).catch(() => null);
@@ -75,6 +77,8 @@ const sideBySide = () => shared(LAYOUT_KEY) === "side";
 const treeView = () => shared(FILES_KEY) !== "flat";
 // Unified or split diff, also one for every reviewer; unified is the default.
 const splitDiff = () => shared(DIFF_KEY) === "split";
+// Long lines wrap or scroll sideways, also one choice for every reviewer; scrolling is the default.
+const wrapLines = () => shared(WRAP_KEY) === "on";
 
 // Picked bases for the branch scope, keyed by repo root (one per worktree), kept across restarts.
 const bases = () => /** @type {Record<string, string>} */ (shared(BASES_KEY) ?? {});
@@ -108,7 +112,7 @@ export default class Reviewer extends View {
     this.scope = null; this.files = []; this.selected = null; this.diff = null; this.hl = null; this.hlGen = 0;
     this.area = "files"; this.cursor = 0; this.sel = null; this.comments = []; this.nextId = 1;
     this.box = null; this.picking = null; this.view = "changes"; this.notice = null; this.watching = new Map();
-    this.visible = [];
+    this.visible = []; this.textWidth = 0; this.charWidth = 0;
     this.rendered = false;
     this.sessionOnly = false; this.since = new Date(); this.observe = createTracker(); this.turnError = null;
     // A turn's snapshots stay while an unsent comment, or one being written, can still be diffed.
@@ -626,6 +630,7 @@ export default class Reviewer extends View {
       copy: () => this.copy(cx),
       send: () => this.send(cx),
       layout: () => setShared(LAYOUT_KEY, sideBySide() ? "stacked" : "side"),
+      wrap: () => setShared(WRAP_KEY, wrapLines() ? "off" : "on"),
       folders: () => { this.view = this.view === "folders" ? "changes" : "folders"; },
       "scope-uncommitted": () => this.setScope("uncommitted", cx),
       "scope-branch": () => this.setScope("branch", cx),
@@ -861,7 +866,7 @@ export default class Reviewer extends View {
     this.headPane = pane;
     const head = headEntry({
       base: this.base ?? null, unsent: this.comments.length, view: this.view,
-      scope: this.scopeKind, sessionOnly: this.sessionOnly, sideBySide: sideBySide(),
+      scope: this.scopeKind, sessionOnly: this.sessionOnly, sideBySide: sideBySide(), wrap: wrapLines(),
     });
     const heads = /** @type {Record<string, unknown>} */ (shared(HEADS_KEY) ?? {});
     if (JSON.stringify(heads[pane]) === JSON.stringify(head)) return;
@@ -883,7 +888,8 @@ export default class Reviewer extends View {
         button(t, `scope-${kind}`, label, (cx) => this.act(`scope-${kind}`, cx)).when(this.scopeKind === kind, (b) => b.bg(t.selected))))
       .child(div().flex_1())
       .child(button(t, "session-only", "This session", (cx) => this.act("session-only", cx)).when(this.sessionOnly, (b) => b.bg(t.selected)))
-      .child(button(t, "layout", sideBySide() ? "Stacked" : "Side by side", (cx) => this.act("layout", cx)));
+      .child(button(t, "layout", sideBySide() ? "Stacked" : "Side by side", (cx) => this.act("layout", cx)))
+      .child(button(t, "wrap", "Wrap", (cx) => this.act("wrap", cx)).when(wrapLines(), (b) => b.bg(t.selected)));
   }
 
   foldersView(t) {
@@ -997,26 +1003,51 @@ export default class Reviewer extends View {
     if (this.markdownShown()) return this.markdownView(t);
     const diff = this.diff, { items, commented } = this.layout(), m = diffMetrics(), split = splitDiff();
     const longest = Math.max(0, ...(diff?.rows ?? []).map((r) => r.text.length * m.char));
-    // A split line gives each side the same width, so both sides' columns line up.
-    const half = longest + m.gutter + 37, width = Math.max(300, split ? 2 * half : longest + 2 * m.gutter + 45);
+    // Split, each side takes half the pane, so both stay on screen; a longer line is cut at its edge.
+    const width = Math.max(300, longest + 2 * m.gutter + 45);
+    // Wrapped, a row breaks at the columns its text has (less two for the scrollbar), and takes one
+    // row height per screen line (a split line, its longer side's), so the list still scrolls to any row.
+    const wrap = wrapLines();
+    const cols = wrap && this.textWidth && this.charWidth ? Math.floor(this.textWidth / this.charWidth) - 2 : 0;
+    const lines = (it) => (!cols || it.comment ? 1 : Math.max(...[it.left, it.right].map((i) =>
+      i === null || diff.rows[i].kind === "hunk" ? 1 : wrappedLines(diff.rows[i].text.length, cols))));
+    const heights = cols ? items.map((it) => m.row * lines(it)) : m.row;
     const sel = this.range();
     // overflow_x_scrollbar() wraps its child, so the flex size goes on a plain parent.
     return v_flex().flex_1().min_w(0).min_h(0).font_family(m.font).text_size(m.size)
       .when(Boolean(diff?.notice), (e) => e.child(div().p(12).text_color(t.dim).child(diff.notice)))
       .when(Boolean(diff?.cut), (e) => e.child(note(t, "Showing the first 1,500 lines")))
-      .child(div().flex_1().min_h(0).relative().child(div().id("diff-x").size_full().overflow_x_scrollbar()
-        .child(div().w_full().min_w(width).h_full()
-          .child(v_virtual_list("diff", items.length, m.row, (i) => items[i].comment ? `c${items[i].comment.id}-${i}` : `r${items[i].left ?? ""}:${items[i].right ?? ""}`,
+      .child(div().id("diff-area").flex_1().min_h(0).relative()
+        .when(wrap, (e) => e.child(this.wrapProbe(m, split)))
+        .child(div().id("diff-x").size_full().overflow_x_scrollbar()
+        .child(div().w_full().min_w(split || cols ? 0 : width).h_full()
+          .child(v_virtual_list("diff", items.length, heights, (i) => items[i].comment ? `c${items[i].comment.id}-${i}` : `r${items[i].left ?? ""}:${items[i].right ?? ""}`,
             (range) => {
               this.visible = rowRange(items, range);
               return items.slice(range.start, range.end).map((it) => it.comment ? this.commentRow(t, it, m)
-                : !split || diff.rows[it.left]?.kind === "hunk" ? this.diffRow(t, it.right, sel, commented, m)
-                : h_flex().w_full().h(m.row).flex_none()
-                  .child(this.halfRow(t, it.left, "old", sel, commented, m, half))
-                  .child(this.halfRow(t, it.right, "new", sel, commented, m, half)));
+                : !split || diff.rows[it.left]?.kind === "hunk" ? this.diffRow(t, it.right, sel, commented, m, cols)
+                : h_flex().w_full().h(m.row * lines(it)).flex_none()
+                  .child(this.halfRow(t, it.left, "old", sel, commented, m, cols))
+                  .child(this.halfRow(t, it.right, "new", sel, commented, m, cols)));
             }).track_scroll(this.scroll).on_item_click((key, cx) => this.clickRow(key, cx)).size_full())))
         .child(Scrollbar.vertical("diff").viewport_from_layout().absolute().inset_0()))
       .when(!diff && this.files.length > 0, (e) => e.child(div().px(12).py(6).text_color(t.dim).child("Select a file to view its changes")));
+  }
+
+  // The app zoom and the font's own metrics both change how many characters fit, so a hidden copy of
+  // a row's fixed cells measures its text column, and a run of characters measures one, in the
+  // same units. Keep the cells as diffRow draws them.
+  // Keep the cells as diffRow and halfRow draw them.
+  wrapProbe(m, split) {
+    const keep = (key, value, cx) => { if (value !== this[key]) { this[key] = value; cx.notify(); } };
+    const side = h_flex().flex_1().min_w(0).gap(8)
+      .child(div().w(3).flex_none()).child(div().w(m.gutter).flex_none())
+      .when(!split, (e) => e.child(div().w(m.gutter).flex_none())).child(div().w(10).flex_none())
+      .child(div().id("wrap-text").flex_1().min_w(0).on_size_change((size, cx) => keep("textWidth", size.width, cx)));
+    return h_flex().absolute().top_0().left_0().w_full().h(0).overflow_hidden()
+      .child(side).when(split, (e) => e.child(div().flex_1()))
+      .child(div().id("wrap-char").absolute().whitespace_nowrap().child("0".repeat(100))
+        .on_size_change((size, cx) => keep("charWidth", size.width / 100, cx)));
   }
 
   // Rows are drawn inside the list's layout pass, where handlers throw; clicks arrive here by row key.
@@ -1028,30 +1059,35 @@ export default class Reviewer extends View {
     cx.notify();
   }
 
-  diffRow(t, i, sel, commented, m) {
+  diffRow(t, i, sel, commented, m, cols = 0) {
     const row = this.diff.rows[i];
     if (row.kind === "hunk") {
       return h_flex().id(`row-${i}`).w_full().h(m.row).flex_none().px(12).bg(t.raised).text_color(t.dim)
         .when(this.area === "diff" && this.cursor === i, (e) => e.bg(t.selected))
         .child(div().truncate().child(row.text));
     }
-    const bg = this.rowBg(t, row, i, sel);
-    return h_flex().id(`row-${i}`).w_full().h(m.row).flex_none().gap(8).when(Boolean(bg), (e) => e.bg(bg))
+    const bg = this.rowBg(t, row, i, sel), lines = cols ? wrappedLines(row.text.length, cols) : 1;
+    // A wrapped row keeps each cell one line high at its top, where its first screen line is.
+    const top = (e) => (lines > 1 ? e.h(m.row).flex().items_center().justify_end() : e);
+    return h_flex().id(`row-${i}`).w_full().h(m.row * lines).flex_none().gap(8).when(lines > 1, (e) => e.items_start())
+      .when(Boolean(bg), (e) => e.bg(bg))
       .child(div().w(3).h_full().flex_none().when(commented.has(i), (e) => e.bg(t.accent)))
-      .child(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(row.old === null ? "" : String(row.old)))
-      .child(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(row.new === null ? "" : String(row.new)))
-      .children(this.rowText(t, row, i));
+      .child(top(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(row.old === null ? "" : String(row.old))))
+      .child(top(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(row.new === null ? "" : String(row.new))))
+      .children(this.rowText(t, row, i, lines > 1 ? { cols, height: m.row } : null));
   }
 
   // One side of a split line: its line number, sign, and text, or a blank where the other side has more lines.
-  halfRow(t, i, side, sel, commented, m, width) {
-    const cell = h_flex().w(width).h_full().flex_none().gap(8).overflow_hidden();
+  // Wrapped, the line may be taller than this side, so its cells sit one line high at the top.
+  halfRow(t, i, side, sel, commented, m, cols) {
+    const cell = h_flex().flex_1().min_w(0).h_full().gap(8).overflow_hidden();
     if (i === null) return cell.bg(t.raised);
     const row = this.diff.rows[i], bg = this.rowBg(t, row, i, sel), number = row[side];
-    return cell.when(Boolean(bg), (e) => e.bg(bg))
+    const top = (e) => (cols ? e.h(m.row).flex().items_center().justify_end() : e);
+    return cell.when(cols > 0, (e) => e.items_start()).when(Boolean(bg), (e) => e.bg(bg))
       .child(div().w(3).h_full().flex_none().when(commented.has(i), (e) => e.bg(t.accent)))
-      .child(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(number === null ? "" : String(number)))
-      .children(this.rowText(t, row, i));
+      .child(top(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(number === null ? "" : String(number))))
+      .children(this.rowText(t, row, i, cols ? { cols, height: m.row } : null));
   }
 
   rowBg(t, row, i, sel) {
@@ -1060,16 +1096,20 @@ export default class Reviewer extends View {
       : row.kind === "add" ? t.ansi2 + "18" : row.kind === "del" ? t.ansi1 + "18" : null;
   }
 
-  rowText(t, row, i) {
+  /** @param {{ cols: number, height: number } | null} [wrap] Draws the text as that many columns a line. */
+  rowText(t, row, i, wrap = null) {
     const runs = markRuns(this.hl?.runs(i) ?? [{ text: row.text, scope: null }], this.findQuery);
+    const line = (pieces) => h_flex().flex_1().min_w(0).children(pieces.map((r) => {
+      const color = r.scope ? colorFor(r.scope, t) : null;
+      return div().flex_none().when(Boolean(color), (e) => e.text_color(/** @type {any} */ (color)))
+        .when(Boolean(r.match), (e) => e.bg(/** @type {import("gpui-kit").Color} */ (`${t.accent}55`)).rounded(2)).child(r.text);
+    }));
     return [
-      div().w(10).flex_none().text_color(row.kind === "add" ? t.ansi2 : row.kind === "del" ? t.ansi1 : t.dim)
+      div().w(10).flex_none().when(Boolean(wrap), (e) => e.h(wrap.height).flex().items_center())
+        .text_color(row.kind === "add" ? t.ansi2 : row.kind === "del" ? t.ansi1 : t.dim)
         .child(row.kind === "add" ? "+" : row.kind === "del" ? "−" : ""),
-      h_flex().flex_1().min_w(0).children(runs.map((r) => {
-        const color = r.scope ? colorFor(r.scope, t) : null;
-        return div().flex_none().when(Boolean(color), (e) => e.text_color(/** @type {any} */ (color)))
-          .when(Boolean(r.match), (e) => e.bg(/** @type {import("gpui-kit").Color} */ (`${t.accent}55`)).rounded(2)).child(r.text);
-      })),
+      wrap ? v_flex().flex_1().min_w(0).children(wrapRuns(runs, wrap.cols).map((pieces) => line(pieces).h(wrap.height)))
+        : line(runs),
     ];
   }
 

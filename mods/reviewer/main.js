@@ -674,7 +674,7 @@ export default class Reviewer extends View {
     const path = props()?.dump;
     if (!path) return;
     const state = {
-      base: this.base, folders: this.scope?.folders, repos: this.scope?.repos?.map((r) => ({ root: r.root, cut: r.cut, files: r.files })),
+      base: this.base, folders: this.scope?.folders, heads: this.scope?.heads, repos: this.scope?.repos?.map((r) => ({ root: r.root, cut: r.cut, files: r.files })),
       selected: this.selected?.replace("\0", ":"), area: this.area, cursor: this.cursor, sel: this.range(), box: this.box,
       diff: this.diff && { path: this.diff.path, notice: this.diff.notice, cut: this.diff.cut, rows: this.diff.rows.length },
       colored: this.diff ? this.diff.rows.filter((_, i) => this.hl?.runs(i)).length : 0,
@@ -858,11 +858,11 @@ export default class Reviewer extends View {
     const states = this.folders().map((folder, i) => this.scope?.folders.find((f) => f.folder === folder)
       ?? { folder, state: i < MAX_FOLDERS ? "loading" : "over-limit" });
     const label = (f) => ({ missing: "missing", "not-repo": "not a git repository", loading: "", "over-limit": `not watched: the limit is ${MAX_FOLDERS}` })[f.state]
-      ?? (f.root === f.folder ? "" : `in ${f.root}`);
+      ?? this.scope?.heads[f.root] ?? "";
     return v_flex().flex_1().min_h(0).p(8).gap(2).overflow_y_scrollbar()
       .children(states.map((f, i) => h_flex().id(`folder-${i}`).h(28).flex_none().px(8).gap(8).items_center().rounded(6).hover((s) => s.bg(t.hover))
-        .child(div().flex_1().min_w(0).truncate().child(f.folder))
-        .child(div().text_size(11).text_color(f.state === "repo" ? t.dim : t.blocked).child(label(f)))
+        .child(div().flex_1().min_w(0).truncate().when(f.state === "repo" && f.root !== f.folder, (e) => e.tooltip(`in ${f.root}`)).child(f.folder))
+        .child(div().max_w(200).truncate().text_size(11).text_color(f.state === "repo" ? t.dim : t.blocked).child(label(f)))
         .child(f.folder === this.base
           ? div().w(60).text_size(11).text_color(t.dim).child("base")
           : button(t, `remove-${i}`, "Remove", (cx) => this.removeFolder(f.folder, cx)))))
@@ -915,11 +915,11 @@ export default class Reviewer extends View {
     const collapsed = this.collapsed.has(r.root);
     return h_flex().h(24).px(6).gap(6).items_center().text_size(11)
       .child(h_flex().id(`repo-${r.root}`).flex_none().gap(4).items_center().rounded(4).cursor_pointer().hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => { this.fold(r.root); cx.notify(); })
+        .tooltip(r.root).on_click((_e, cx) => { this.fold(r.root); cx.notify(); })
         .child(div().w(10).text_color(t.dim).child(collapsed ? "▸" : "▾"))
         .child(div().font_semibold().child(repoName(r.root)))
         .when(collapsed && r.files.length > 0, (e) => e.child(div().text_color(t.dim).child(`${r.files.length} file${r.files.length === 1 ? "" : "s"}`))))
-      .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(r.root))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(this.scope.heads[r.root] ?? ""))
       .when(Boolean(pick), (e) => e.child(div().id(`scope-pick-${r.root}`).px(6).rounded(4).flex_none().cursor_pointer().text_color(t.accent)
         .hover((s) => s.bg(t.hover)).on_click((_e, cx) => pick.open(cx)).child(pick.label)));
   }

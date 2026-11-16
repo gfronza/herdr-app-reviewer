@@ -1,4 +1,4 @@
-import { resolveFolder, listChanges } from "./git.js";
+import { headName, resolveFolder, listChanges } from "./git.js";
 import { branchRange, commitsRange } from "./revs.js";
 
 export const MAX_FOLDERS = 10;
@@ -24,10 +24,12 @@ export async function resolveRoots(folders, exec) {
 
 // The one place that decides which repos and files the reviewer shows. `only`, when given, is the
 // "this session only" filter: it keeps the files it holds, except in the repos it cannot judge,
-// which keep every file and say why. `hidden` names the files it took out.
+// which keep every file and say why. `hidden` names the files it took out; `heads` maps each
+// repo root to the branch it is on.
 /** @param {Scope} scope @param {{ files: Set<string>, blind: Map<string, string> } | null} [only] */
 export async function collectScope(folders, scope, exec, readText, only = null) {
   const { resolved, roots } = await resolveRoots(folders, exec);
+  const heads = Object.fromEntries(await Promise.all(roots.map(async (root) => [root, await headName(root, exec)])));
   const hidden = new Set();
   const repos = (await Promise.all(roots.filter((root) => scope.kind !== "commits" || root === scope.root)
     .map((root) => repoIn(root, scope, exec, readText))))
@@ -42,7 +44,7 @@ export async function collectScope(folders, scope, exec, readText, only = null) 
       return { ...r, files };
     });
   // A branch, commits, or turn repo stays listed with nothing in it, to show its base or its problem.
-  return { folders: resolved, repos: repos.filter((r) => r.files.length || r.problem || scope.kind !== "uncommitted"), hidden };
+  return { folders: resolved, heads, repos: repos.filter((r) => r.files.length || r.problem || scope.kind !== "uncommitted"), hidden };
 }
 
 const NONE = { files: [], cut: false };

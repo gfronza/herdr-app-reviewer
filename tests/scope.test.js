@@ -46,6 +46,7 @@ test("collectScope: folders in order, one group per repo, clean repos omitted", 
       { folder: path.join(changed, "src"), state: "repo", root: changed },
       { folder: gone, state: "missing" },
     ],
+    heads: { [changed]: "main", [clean]: "main" },
     repos: [{ root: changed, range: null, label: null, base: null, missing: null, problem: null, cut: false, files: [{ path: "src/a.txt", status: "M", add: 1, del: 0, untracked: false, binary: false }] }],
     hidden: new Set(),
   });
@@ -125,4 +126,17 @@ test("collectScope, commits: a pick that no longer resolves says so", async () =
   const gone = "0".repeat(40);
   const { repos } = await collectScope([repo], { kind: "commits", root: repo, first: gone, last: gone }, exec, readText);
   assert.deepEqual([repos[0].files, repos[0].problem], [[], "those commits are gone: press G to pick again"]);
+});
+
+test("collectScope: names the branch each repo is on, a detached HEAD, and an unborn branch", async () => {
+  const onBranch = makeRepo(), detached = makeRepo(), unborn = tmp("reviewer-scope-");
+  gitIn(onBranch, "checkout", "-q", "-b", "feat/x");
+  gitIn(detached, "checkout", "-q", "--detach");
+  gitIn(unborn, "init", "-q", "-b", "trunk");
+  const { heads } = await collectScope([onBranch, path.join(detached, "src"), unborn], UNCOMMITTED, exec, readText);
+  assert.deepEqual(heads, {
+    [onBranch]: "feat/x",
+    [detached]: `detached at ${gitIn(detached, "rev-parse", "--short", "HEAD").trim()}`,
+    [unborn]: "trunk",
+  });
 });

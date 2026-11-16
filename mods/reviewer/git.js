@@ -23,6 +23,14 @@ export async function resolveFolder(folder, exec) {
   return { folder, state: "not-repo" };
 }
 
+// symbolic-ref names an unborn branch too; it fails only on a detached HEAD.
+/** The branch HEAD is on, or "detached at <short id>". */
+export async function headName(root, exec) {
+  const ref = await exec("git", [...READ, "symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: root });
+  if (ref.code === 0) return ref.stdout.trim();
+  return `detached at ${(await git(root, ["rev-parse", "--short", "HEAD"], exec)).trim()}`;
+}
+
 const lineCount = (text) => (text ? text.split("\n").length - Number(text.endsWith("\n")) : 0);
 const isBinary = (text) => text === null || text.includes("\0");
 

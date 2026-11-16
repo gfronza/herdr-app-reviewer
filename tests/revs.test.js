@@ -72,6 +72,47 @@ test("defaultBase: then init.defaultBranch, then main, then master", async () =>
   assert.equal(await defaultBase(makeRepo("other"), exec), null);
 });
 
+test("defaultBase: a branch made while on another branch diffs against that branch", async () => {
+  const repo = makeRepo();
+  gitIn(repo, "checkout", "-q", "-b", "dev");
+  gitIn(repo, "checkout", "-q", "-b", "feature");
+  assert.equal(await defaultBase(repo, exec), "dev");
+});
+
+test("defaultBase: a branch made from a remote branch diffs against its local copy", async () => {
+  const origin = makeRepo();
+  gitIn(origin, "branch", "-q", "dev");
+  const clone = tmp();
+  execFileSync("git", ["clone", "-q", origin, clone]);
+  gitIn(clone, "branch", "-q", "dev", "origin/dev");
+  gitIn(clone, "checkout", "-q", "-b", "feature", "origin/dev");
+  assert.equal(await defaultBase(clone, exec), "dev");
+});
+
+test("defaultBase: a source with no local branch falls back to the default", async () => {
+  const origin = makeRepo();
+  gitIn(origin, "branch", "-q", "dev");
+  const clone = tmp();
+  execFileSync("git", ["clone", "-q", origin, clone]);
+  gitIn(clone, "checkout", "-q", "-b", "feature", "origin/dev");
+  assert.equal(await defaultBase(clone, exec), "main");
+  const detached = makeRepo();
+  gitIn(detached, "checkout", "-q", "--detach");
+  gitIn(detached, "checkout", "-q", "-b", "feature");
+  assert.equal(await defaultBase(detached, exec), "main");
+});
+
+test("defaultBase: a branch checked out from its own remote copy is not its own base", async () => {
+  const origin = makeRepo();
+  gitIn(origin, "checkout", "-q", "-b", "feature");
+  commit(origin, "mine");
+  gitIn(origin, "checkout", "-q", "main");
+  const clone = tmp();
+  execFileSync("git", ["clone", "-q", origin, clone]);
+  gitIn(clone, "checkout", "-q", "feature");
+  assert.equal(await defaultBase(clone, exec), "main");
+});
+
 test("commitOf: resolves revisions, refuses option-like text and unknown names", async () => {
   const repo = makeRepo();
   const first = head(repo);

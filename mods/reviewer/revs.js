@@ -10,12 +10,33 @@ const tryGit = async (root, args, exec) => {
 export const commitOf = async (root, rev, exec) =>
   rev && !rev.startsWith("-") ? tryGit(root, ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], exec) : null;
 
-// Without a pick, the branch scope diffs against a local branch: the one origin/HEAD names, then
-// init.defaultBranch, main, master. Never the remote-tracking branch itself.
+const isLocal = async (root, name, exec) => Boolean(name && (await commitOf(root, `refs/heads/${name}`, exec)));
+const reflog = async (root, ref, exec) => (await tryGit(root, ["reflog", "show", "--format=%gs", ref, "--"], exec))?.split("\n") ?? [];
+
+// The local branch HEAD's branch was made from, as the reflog recorded it. "Created from HEAD"
+// leaves the name to the checkout that first moved onto the branch.
+async function createdFrom(root, exec) {
+  const branch = await tryGit(root, ["symbolic-ref", "--quiet", "--short", "HEAD"], exec);
+  if (!branch) return null;
+  let from = /^branch: Created from (\S+)$/.exec((await reflog(root, `refs/heads/${branch}`, exec)).pop() ?? "")?.[1];
+  if (from === "HEAD") {
+    const moves = (await reflog(root, "HEAD", exec)).map((s) => /^checkout: moving from (\S+) to (\S+)$/.exec(s));
+    from = moves.filter((m) => m?.[2] === branch).pop()?.[1];
+  }
+  // The base stays local: origin/dev stands for dev, and only when dev exists.
+  if (from && !(await isLocal(root, from, exec)) && (await commitOf(root, `refs/remotes/${from}`, exec))) from = from.slice(from.indexOf("/") + 1);
+  // A branch checked out from its own remote copy names itself.
+  return from !== branch && (await isLocal(root, from, exec)) ? from : null;
+}
+
+// Without a pick, the branch scope diffs against a local branch: the one HEAD's branch was made
+// from, then the one origin/HEAD names, init.defaultBranch, main, master. Never a remote-tracking branch.
 export async function defaultBase(root, exec) {
+  const from = await createdFrom(root, exec);
+  if (from) return from;
   const remote = await tryGit(root, ["rev-parse", "--abbrev-ref", "--verify", "--quiet", "refs/remotes/origin/HEAD"], exec);
   const names = [remote?.replace(/^origin\//, ""), await tryGit(root, ["config", "init.defaultBranch"], exec), "main", "master"];
-  for (const name of names) if (name && (await commitOf(root, `refs/heads/${name}`, exec))) return name;
+  for (const name of names) if (await isLocal(root, name, exec)) return name;
   return null;
 }
 

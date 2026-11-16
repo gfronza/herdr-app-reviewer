@@ -513,7 +513,9 @@ export default class Reviewer extends View {
     }
     if (c.kind === "commits") return c.items.filter((x) => `${x.short} ${x.subject} ${repoName(x.root)}`.toLowerCase().includes(q));
     const rows = c.items.filter((b) => b.name.toLowerCase().includes(q));
-    return this.query && !c.items.some((b) => b.name === this.query) ? [...rows, { typed: this.query }] : rows;
+    const picked = bases()[c.root];
+    return [...(!this.query && picked ? [{ forget: picked }] : []), ...rows,
+      ...(this.query && !c.items.some((b) => b.name === this.query) ? [{ typed: this.query }] : [])];
   }
 
   filterTyped(cx) {
@@ -530,7 +532,7 @@ export default class Reviewer extends View {
   choose(shift, cx) {
     const c = this.chooser, row = c && this.chooserRows()[c.at];
     if (!row) return;
-    if (c.kind === "base") { this.chooseBase(c, row.typed ?? row.name, cx); return; }
+    if (c.kind === "base") { this.chooseBase(c, row.forget ? null : row.typed ?? row.name, cx); return; }
     if (c.kind === "files") { this.openFile(row, null, cx); return; }
     if (c.kind === "code") { this.findQuery = this.query; this.openFile(row.entry, row.row, cx); return; }
     if (shift) { c.mark = row; this.say(`Run starts at ${row.short}; press Enter on its other end`, cx); return; }
@@ -546,9 +548,10 @@ export default class Reviewer extends View {
     });
   }
 
+  // A null name forgets the repo's pick, so its base is detected again.
   chooseBase(c, name, cx) {
     cx.spawn(async (cx) => {
-      if (!(await commitOf(c.root, name, run_exec))) { this.say(`No commit named "${name}"`, cx); return; }
+      if (name && !(await commitOf(c.root, name, run_exec))) { this.say(`No commit named "${name}"`, cx); return; }
       if (this.chooser !== c) return;
       saveBase(c.root, name === c.defaultName ? null : name);
       this.notice = null;
@@ -687,7 +690,7 @@ export default class Reviewer extends View {
       chooser: this.chooser && {
         kind: this.chooser.kind, root: this.chooser.root, at: this.chooser.at, mark: this.chooser.mark?.short ?? null,
         rows: this.chooserRows().map((r) => this.chooser.kind === "files" ? r.file.path : this.chooser.kind === "code" ? `${r.entry.file.path}:${r.row}`
-          : r.typed ?? r.name ?? `${repoName(r.root)} ${r.short} ${r.subject}`),
+          : r.forget ? `forget ${r.forget}` : r.typed ?? r.name ?? `${repoName(r.root)} ${r.short} ${r.subject}`),
         read: this.chooser.read, cut: this.chooser.cut, partial: this.chooser.partial, more: this.chooser.found?.more,
       },
     };
@@ -1059,7 +1062,8 @@ export default class Reviewer extends View {
     }[c.kind]();
     const picked = bases()[c.root];
     const row = (r, i) => {
-      const body = r.typed !== undefined ? [div().flex_1().min_w(0).truncate().child(`Use revision "${r.typed}"`)]
+      const body = r.forget ? [div().flex_1().min_w(0).truncate().child(`Forget the pick ${r.forget}${c.defaultName ? `, use ${c.defaultName}` : ""}`)]
+        : r.typed !== undefined ? [div().flex_1().min_w(0).truncate().child(`Use revision "${r.typed}"`)]
         : c.kind === "files" ? [
           div().w(12).flex_none().text_size(11).text_color(t.dim).child(r.file.status),
           div().flex_1().min_w(0).truncate().child(r.file.path),

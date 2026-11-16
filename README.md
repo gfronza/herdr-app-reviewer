@@ -64,10 +64,12 @@ says how many files it covered, and it shows the first 200 matches.
 - **Uncommitted** (`u`), the default: changes since the last commit.
 - **Branch** (`b`): everything since the branch left its base, commits and uncommitted changes
   together. Each repo diffs against its own base, named in its heading ("vs main"). The base is
-  your local copy of the remote's default branch (as `origin/HEAD` names it), else
-  `init.defaultBranch`, `main`, or `master`; always a local branch. To pick another, press `B` or
-  click the base name. Type to filter the branches, or type any revision, like `HEAD~2` or a tag.
-  The pick is kept per repo across restarts; picking the default clears it.
+  the branch yours was made from, as git's reflog recorded it (`origin/dev` counts as your local
+  `dev`). Without that record, it is your local copy of the remote's default branch (as
+  `origin/HEAD` names it), else `init.defaultBranch`, `main`, or `master`; always a local branch.
+  To pick another, press `B` or click the base name. Type to filter the branches, or type any
+  revision, like `HEAD~2` or a tag. The pick is kept per repo across restarts, even when you switch
+  branches. To drop it, choose **Forget the pick** at the top of the list, or pick the default.
 - **Last turn** (`t`): what the agent's latest turn changed, across every watched repo, commits
   made during the turn included. A turn starts when the agents in the reviewer's tab go from idle
   to working; the pane then saves a snapshot of each watched repo and diffs against it. A turn that

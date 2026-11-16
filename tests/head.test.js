@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { headEntry, pruneHeads } from "../mods/reviewer/head.js";
+import { headEntry, headerShowsControls, pruneHeads } from "../mods/reviewer/head.js";
 
 const state = (over = {}) => ({ base: "/r/app", unsent: 0, view: "changes", scope: "uncommitted", sessionOnly: false, sideBySide: false, ...over });
 // One string per control: its command, then * when selected and | when it starts a group.
@@ -35,4 +35,19 @@ test("headEntry: unsent comments show as a badge, and no folder says so", () => 
 test("pruneHeads: keeps live panes, whoever wrote them, and drops closed ones", () => {
   const heads = { p1: { title: "Reviewer" }, p2: { title: "diff.js" }, gone: { title: "Reviewer" } };
   assert.deepEqual(pruneHeads(heads, new Set(["p1", "p2", "p3"])), { p1: { title: "Reviewer" }, p2: { title: "diff.js" } });
+});
+
+// A layout shaped like Herdr's: the pane header sits on a tab block a few levels down.
+const layoutWith = (header) => ({ type: "row", children: [{ id: "sidebar" }, { type: "column", children: [{ content: { tab: "active", pane: header ? { header } : {} } }] }] });
+
+test("headerShowsControls: a listed header mod that always shows draws the controls", () => {
+  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-plus" }, reveal: "always" }), ["pane-plus"]), true);
+  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-plus" } }), ["pane-plus"]), true);
+});
+
+test("headerShowsControls: an unlisted mod, a hover header, no header, or no list keeps the reviewer's rows", () => {
+  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane" }, reveal: "always" }), ["pane-plus"]), false);
+  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-plus" }, reveal: "hover" }), ["pane-plus"]), false);
+  assert.equal(headerShowsControls(layoutWith(null), ["pane-plus"]), false);
+  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-plus" } }), null), false);
 });

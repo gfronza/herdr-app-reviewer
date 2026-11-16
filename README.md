@@ -162,6 +162,8 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 - It writes the clipboard when you copy or send.
 - It writes its title, folder and controls into the shared key `pane-heads`, under its pane id,
   for a pane header mod that shows them. Each write drops the entries of panes that are gone.
+  When the layout's pane header mod is listed in the shared key `pane-heads-actions` and always
+  shows, the pane leaves out its own title and scope rows, since the header shows them.
 - It reaches no network.
 
 ## Limitations

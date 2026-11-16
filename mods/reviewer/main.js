@@ -1,7 +1,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import {
-  agents, closeOverlay, exec, focused, nextCommand, panes, pickFolder, props, readTextFile, run,
+  agents, closeOverlay, exec, focused, layout, nextCommand, panes, pickFolder, props, readTextFile, run,
   setShared, settings, shared, theme as herdrTheme, watchFolder, writeTextFile,
 } from "herdr";
 import { collectScope, fileKey, MAX_FOLDERS, resolveRoots } from "./scope.js";
@@ -14,7 +14,7 @@ import { Turns, createTracker, workState } from "./turns.js";
 import { fileRows } from "./tree.js";
 import { lastLine, spans, splitLines } from "./split.js";
 import { findRows, markRuns, nextMatch, searchFiles } from "./find.js";
-import { HEADS_KEY, headEntry, pruneHeads } from "./head.js";
+import { ACTIONS_KEY, HEADS_KEY, headEntry, headerShowsControls, pruneHeads } from "./head.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
@@ -830,11 +830,13 @@ export default class Reviewer extends View {
   render(_cx) {
     if (props()?.overlay) return div();
     const t = theme();
+    // When the pane header draws the title and controls (see head.js), these rows would repeat them.
+    const rows = !this.ownPane() || !headerShowsControls(layout(), shared(ACTIONS_KEY));
     return v_flex().id("reviewer").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
       .track_focus(this.handle).on_mouse_down("left", () => this.handle.focus())
       .on_key_down((e, cx) => this.onKey(e, cx))
-      .child(this.header(t))
-      .when(this.view === "changes", (e) => e.child(this.toolbar(t)))
+      .when(rows, (e) => e.child(this.header(t)))
+      .when(rows && this.view === "changes", (e) => e.child(this.toolbar(t)))
       .child(this.view === "folders" ? this.foldersView(t) : this.changesView(t))
       .child(this.footer(t));
   }
@@ -849,9 +851,12 @@ export default class Reviewer extends View {
       .child(button(t, "folders", this.view === "folders" ? "Changes" : "Folders", (cx) => this.act("folders", cx)));
   }
 
+  // The tab finds the pane: opening a reviewer closes the tab's others first.
+  ownPane() { return panes().find((p) => p.mod === "reviewer" && p.tab === this.tab)?.pane; }
+
   // Written from the 250 ms timer, and only on a change: setShared re-renders every mod.
   publishHead() {
-    const pane = panes().find((p) => p.mod === "reviewer" && p.tab === this.tab)?.pane;
+    const pane = this.ownPane();
     if (!pane) return;
     const head = headEntry({
       base: this.base ?? null, unsent: this.comments.length, view: this.view,

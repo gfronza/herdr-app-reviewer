@@ -31,6 +31,18 @@ export function headEntry(s) {
   };
 }
 
+// Header mods that draw `actions` list themselves here.
+export const ACTIONS_KEY = "pane-heads-actions";
+
+const paneHeader = (node) => node?.content?.pane?.header ?? (node?.children ?? []).map(paneHeader).find(Boolean) ?? null;
+
+/** Whether the layout's pane header draws the controls, so the reviewer can leave its own rows out.
+ *  A header shown only on hover would hide them most of the time. */
+export function headerShowsControls(layout, actionMods) {
+  const header = paneHeader(layout);
+  return Boolean(header) && (header.reveal ?? "always") === "always" && (actionMods ?? []).includes(header.content?.mod);
+}
+
 /** Drops the entries of panes that are gone; `pane-heads` is persisted and would otherwise grow. */
 export function pruneHeads(heads, livePanes) {
   return Object.fromEntries(Object.entries(heads).filter(([pane]) => livePanes.has(pane)));

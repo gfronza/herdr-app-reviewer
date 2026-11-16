@@ -858,6 +858,7 @@ export default class Reviewer extends View {
   publishHead() {
     const pane = this.ownPane();
     if (!pane) return;
+    this.headPane = pane;
     const head = headEntry({
       base: this.base ?? null, unsent: this.comments.length, view: this.view,
       scope: this.scopeKind, sessionOnly: this.sessionOnly, sideBySide: sideBySide(),
@@ -865,6 +866,14 @@ export default class Reviewer extends View {
     const heads = /** @type {Record<string, unknown>} */ (shared(HEADS_KEY) ?? {});
     if (JSON.stringify(heads[pane]) === JSON.stringify(head)) return;
     setShared(HEADS_KEY, { ...pruneHeads(heads, new Set(panes().map((p) => p.pane))), [pane]: head });
+  }
+
+  // Herdr calls this when the pane goes; the pruning above covers a crash.
+  async close() {
+    const heads = /** @type {Record<string, unknown>} */ (shared(HEADS_KEY) ?? {});
+    if (!this.headPane || !(this.headPane in heads)) return;
+    const { [this.headPane]: _, ...rest } = heads;
+    setShared(HEADS_KEY, rest);
   }
 
   // Its own row: beside the header's buttons, the scope tabs ran off a half-width pane.

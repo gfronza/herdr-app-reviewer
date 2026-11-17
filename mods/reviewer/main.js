@@ -1,7 +1,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import {
-  agents, closeOverlay, exec, focused, layout, nextCommand, panes, pickFolder, props, readTextFile, run,
+  agents, closeOverlay, exec, focused, layout, nextCommand, openOverlay, panes, pickFolder, props, readTextFile, run,
   setShared, settings, shared, theme as herdrTheme, watchFolder, writeTextFile,
 } from "herdr";
 import { collectScope, fileKey, MAX_FOLDERS, resolveRoots } from "./scope.js";
@@ -16,6 +16,7 @@ import { lastLine, spans, splitLines } from "./split.js";
 import { findRows, markRuns, nextMatch, searchFiles } from "./find.js";
 import { ACTIONS_KEY, HEADS_KEY, headEntry, headerShowsControls, pruneHeads } from "./head.js";
 import { wrapRuns, wrappedLines } from "./wrap.js";
+import { OPTIONS, valueOf, writeOf } from "./settings.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
@@ -31,17 +32,14 @@ const KEYS = {
   v: "select", c: "comment", e: "edit", d: "delete", y: "copy", s: "send", l: "layout", escape: "cancel",
   u: "scope-uncommitted", b: "scope-branch", t: "scope-turn", g: "scope-commits", B: "pick-base", G: "pick-commits",
   o: "session-only", z: "file-view", w: "diff-view", m: "markdown", "/": "find", n: "next-match", N: "prev-match", p: "find-file", P: "search-code",
+  ",": "settings",
 };
 // Code search holds every listed diff in memory and filters it on each keystroke; past this many
 // rows one filter pass could run into the script time limit.
 const SEARCH_ROWS = 100000;
 const SEARCH_HITS = 200;
 const WATCH_KEY = "reviewer.watch";
-const LAYOUT_KEY = "reviewer.layout";
 const BASES_KEY = "reviewer.bases";
-const FILES_KEY = "reviewer.files";
-const DIFF_KEY = "reviewer.diff";
-const WRAP_KEY = "reviewer.wrap";
 const run_exec = (cmd, args, opts) => exec(cmd, args, { cwd: opts?.cwd });
 // readTextFile rejects on bytes that are not UTF-8; git.js expects null for an unreadable file.
 const readText = (path) => readTextFile(path).catch(() => null);
@@ -71,14 +69,12 @@ function saveExtraFolders(base, folders) {
   setShared(WATCH_KEY, { .../** @type {object} */ (shared(WATCH_KEY) ?? {}), [base]: folders });
 }
 
-// One layout for every reviewer, kept in shared state so it survives restarts.
-const sideBySide = () => shared(LAYOUT_KEY) === "side";
-// Tree or flat file list, one for every reviewer like the layout; the tree is the default.
-const treeView = () => shared(FILES_KEY) !== "flat";
-// Unified or split diff, also one for every reviewer; unified is the default.
-const splitDiff = () => shared(DIFF_KEY) === "split";
-// Long lines wrap or scroll sideways, also one choice for every reviewer; scrolling is the default.
-const wrapLines = () => shared(WRAP_KEY) === "on";
+// Layout, file list, diff and wrap are one choice for every reviewer, kept across restarts.
+const sideBySide = () => valueOf("layout", shared) === "side";
+const treeView = () => valueOf("files", shared) === "tree";
+const splitDiff = () => valueOf("diff", shared) === "split";
+const wrapLines = () => valueOf("wrap", shared) === "on";
+const saveSetting = (/** @type {string} */ key, /** @type {string} */ value) => setShared(...writeOf(key, value, shared));
 
 // Picked bases for the branch scope, keyed by repo root (one per worktree), kept across restarts.
 const bases = () => /** @type {Record<string, string>} */ (shared(BASES_KEY) ?? {});
@@ -90,6 +86,7 @@ function saveBase(root, name) {
 export default class Reviewer extends View {
   init(_props, cx) {
     const p = props();
+    if (p?.screen === "settings") { this.handle = cx.focus_handle(); this.handle.focus(); return; }
     if (p?.overlay) { toggle(); closeOverlay(p.overlay); return; }
     this.base = p?.base;
     this.tab = p?.tab;
@@ -107,14 +104,14 @@ export default class Reviewer extends View {
     // the keyboard where it went, which may be another pane.
     this.finder.on("blur", (_e, cx) => { if (this.findOpen) { this.findOpen = false; cx.notify(); } });
     this.findOpen = false; this.findQuery = ""; this.findFrom = 0; this.pendingRow = null;
-    this.query = ""; this.chooser = null; this.scopeKind = "uncommitted"; this.commitPick = null;
+    this.query = ""; this.chooser = null; this.scopeKind = valueOf("scope", shared); this.commitPick = null;
     this.collapsed = new Set();
     this.scope = null; this.files = []; this.selected = null; this.diff = null; this.hl = null; this.hlGen = 0;
     this.area = "files"; this.cursor = 0; this.sel = null; this.comments = []; this.nextId = 1;
     this.box = null; this.picking = null; this.view = "changes"; this.notice = null; this.watching = new Map();
     this.visible = []; this.textWidth = 0; this.charWidth = 0;
-    this.rendered = false;
-    this.sessionOnly = false; this.since = new Date(); this.observe = createTracker(); this.turnError = null;
+    this.rendered = valueOf("markdown", shared) === "rendered";
+    this.sessionOnly = valueOf("session", shared) === "on"; this.since = new Date(); this.observe = createTracker(); this.turnError = null;
     // A turn's snapshots stay while an unsent comment, or one being written, can still be diffed.
     this.turns = new Turns(run_exec, {
       name: this.tab,
@@ -629,9 +626,10 @@ export default class Reviewer extends View {
       delete: () => { const c = comment(); if (c) this.deleteComment(c, cx); },
       copy: () => this.copy(cx),
       send: () => this.send(cx),
-      layout: () => setShared(LAYOUT_KEY, sideBySide() ? "stacked" : "side"),
-      wrap: () => setShared(WRAP_KEY, wrapLines() ? "off" : "on"),
+      layout: () => saveSetting("layout", sideBySide() ? "stacked" : "side"),
+      wrap: () => saveSetting("wrap", wrapLines() ? "off" : "on"),
       folders: () => { this.view = this.view === "folders" ? "changes" : "folders"; },
+      settings: () => openOverlay({ mod: "reviewer", kind: "dialog", width: 540, height: 520, props: { screen: "settings" } }),
       "scope-uncommitted": () => this.setScope("uncommitted", cx),
       "scope-branch": () => this.setScope("branch", cx),
       "scope-turn": () => this.setScope("turn", cx),
@@ -640,8 +638,8 @@ export default class Reviewer extends View {
       "pick-base": () => this.openBasePicker(null, cx),
       "pick-commits": () => this.openCommitPicker(cx),
       "toggle-repo": () => this.fold(this.selectedRoot()),
-      "file-view": () => setShared(FILES_KEY, treeView() ? "flat" : "tree"),
-      "diff-view": () => setShared(DIFF_KEY, splitDiff() ? "unified" : "split"),
+      "file-view": () => saveSetting("files", treeView() ? "flat" : "tree"),
+      "diff-view": () => saveSetting("diff", splitDiff() ? "unified" : "split"),
       markdown: () => {
         this.rendered = !this.rendered;
         if (this.markdownShown()) this.sel = null;
@@ -833,6 +831,7 @@ export default class Reviewer extends View {
   }
 
   render(_cx) {
+    if (props()?.screen === "settings") return this.settingsView(theme());
     if (props()?.overlay) return div();
     const t = theme();
     // When the pane header draws the title and controls (see head.js), these rows would repeat them.
@@ -844,6 +843,32 @@ export default class Reviewer extends View {
       .when(rows && this.view === "changes", (e) => e.child(this.toolbar(t)))
       .child(this.view === "folders" ? this.foldersView(t) : this.changesView(t))
       .child(this.footer(t));
+  }
+
+  // The dialog `,` opens: each setting as segment buttons, saved on click.
+  settingsView(t) {
+    const group = (title, note, options) => v_flex()
+      .child(div().pt(16).text_size(11).font_semibold().text_color(t.dim).child(title.toUpperCase()))
+      .child(div().pb(4).text_size(11).text_color(t.dim).child(note))
+      .children(options.map((o) => this.settingRow(t, o)));
+    return v_flex().id("reviewer-settings").size_full().overflow_y_scroll().px(24).py(18).bg(t.popover).text_color(t.foreground).text_size(13)
+      .track_focus(this.handle)
+      .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); closeOverlay(props().overlay); } })
+      .child(div().text_size(15).font_semibold().child("Reviewer settings"))
+      .child(group("Every pane", "Open panes change at once", OPTIONS.filter((o) => !o.start)))
+      .child(group("New panes", "Panes opened after a change start this way", OPTIONS.filter((o) => o.start)));
+  }
+
+  settingRow(t, o) {
+    const now = valueOf(o.key, shared);
+    return h_flex().py(6).gap(16).items_center()
+      .child(v_flex().flex_1().min_w(0).child(div().child(o.title)).child(div().text_size(11).text_color(t.muted).child(o.description)))
+      .child(h_flex().flex_none().p(2).gap(2).rounded(8).border_1().border_color(t.border).bg(t.background)
+        .children(Object.entries(o.choices).map(([value, label]) => div().id(`setting-${o.key}-${value}`).px(10).py(3).rounded(6).text_size(12).cursor_pointer()
+          .when(value === now, (e) => e.bg(t.raised).text_color(t.foreground).border_1().border_color(t.border))
+          .when(value !== now, (e) => e.text_color(t.muted).hover((s) => s.text_color(t.foreground)))
+          .on_click((_e, cx) => { saveSetting(o.key, value); cx.notify(); })
+          .child(label))));
   }
 
   header(t) {

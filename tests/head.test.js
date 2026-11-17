@@ -6,23 +6,23 @@ const state = (over = {}) => ({ base: "/r/app", unsent: 0, view: "changes", scop
 // One string per control: its command, then * when selected and | when it starts a group.
 const show = (entry) => entry.actions.map((a) => `${a.gap ? "| " : ""}${a.command.replace("reviewer.", "")}${a.selected ? "*" : ""}`);
 
-test("headEntry: the changes view shows the scopes, the toggles and Folders, with the scope selected", () => {
+test("headEntry: the changes view shows the scopes, the toggles, Folders and Settings, with the scope selected", () => {
   const entry = headEntry(state({ scope: "branch" }));
   assert.equal(entry.title, "Reviewer");
   assert.equal(entry.detail, "/r/app");
   assert.equal(entry.badge, undefined);
-  assert.deepEqual(show(entry), ["scope-uncommitted", "scope-branch*", "scope-turn", "scope-commits", "| session-only", "layout", "wrap", "folders"]);
+  assert.deepEqual(show(entry), ["scope-uncommitted", "scope-branch*", "scope-turn", "scope-commits", "| session-only", "layout", "wrap", "folders", "settings"]);
   assert.deepEqual(entry.actions.slice(0, 4).map((a) => a.label), ["Local", "Branch", "Turn", "Commits"]);
 });
 
 test("headEntry: This session, side by side and wrap show as selected toggles", () => {
   assert.deepEqual(show(headEntry(state({ scope: "turn", sessionOnly: true, sideBySide: true, wrap: true }))),
-    ["scope-uncommitted", "scope-branch", "scope-turn*", "scope-commits", "| session-only*", "layout*", "wrap*", "folders"]);
+    ["scope-uncommitted", "scope-branch", "scope-turn*", "scope-commits", "| session-only*", "layout*", "wrap*", "folders", "settings"]);
 });
 
-test("headEntry: the folders view shows only the way back, selected", () => {
+test("headEntry: the folders view shows only the way back, selected, and Settings", () => {
   const entry = headEntry(state({ view: "folders" }));
-  assert.deepEqual(show(entry), ["folders*"]);
+  assert.deepEqual(show(entry), ["folders*", "settings"]);
   assert.equal(entry.actions[0].tooltip, "Back to the changes");
 });
 

@@ -4,7 +4,7 @@ import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { READ, resolveFolder, listChanges, fileDiff, fileText } from "../mods/reviewer/git.js";
+import { LIMITS, READ, resolveFolder, listChanges, fileDiff, fileText } from "../mods/reviewer/git.js";
 
 // Keep the user's git config (signing, hooks, excludes) out of the fixtures.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -149,6 +149,14 @@ test("listChanges: stops at 1000 files and says it was cut", async () => {
   assert.equal(files[999].path, "f0999.txt");
 });
 
+test("listChanges: stops at the files limit it is given", async () => {
+  const root = makeRepo();
+  for (const name of ["a.txt", "b.txt", "c.txt"]) write(root, name, "x\n");
+  const { files, cut } = await listChanges(root, exec, readText, undefined, { ...LIMITS, files: 2 });
+  assert.equal(cut, true);
+  assert.deepEqual(files.map((f) => f.path), ["a.txt", "b.txt"]);
+});
+
 test("fileDiff: a modified file gets old and new line numbers", async () => {
   const root = makeRepo({ "m.txt": "a\nb\nc\n" });
   write(root, "m.txt", "a\nB\nc\nd");
@@ -242,6 +250,20 @@ test("fileDiff: expands tabs, cuts long lines, skips the no-newline marker", asy
   assert.equal(rows[2].text, "    x");
   assert.equal(rows[3].text, "ab  c");
   assert.equal(rows[4].text, "z".repeat(3999) + "…");
+});
+
+test("fileDiff: cuts rows and long lines at the limits it is given, tracked or not", async () => {
+  const root = makeRepo({ "t.txt": "old\n" });
+  const long = "abcdefghijklmnopqrstuvwxyz";
+  write(root, "t.txt", `${long}\n2\n3\n4\n`);
+  write(root, "new.txt", `${long}\n2\n3\n4\n`);
+  const limits = { ...LIMITS, rows: 3, line: 20 };
+  const tracked = await fileDiff(root, { path: "t.txt", untracked: false }, exec, readText, undefined, limits);
+  assert.equal(tracked.cut, true);
+  assert.deepEqual(tracked.rows.map((r) => r.text), ["@@ -1 +1,4 @@", "old", "abcdefghijklmnopqrs…"]);
+  const untracked = await fileDiff(root, { path: "new.txt", untracked: true }, exec, readText, undefined, limits);
+  assert.equal(untracked.cut, true);
+  assert.deepEqual(untracked.rows.map((r) => r.text), ["@@ -0,0 +1,4 @@", "abcdefghijklmnopqrs…", "2"]);
 });
 
 test("fileDiff: stops at 1500 rows and says it was cut", async () => {

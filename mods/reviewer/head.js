@@ -28,7 +28,8 @@ export function headEntry(s) {
     title: "Reviewer",
     detail: s.base ?? "No folder",
     ...(s.unsent > 0 ? { badge: `${s.unsent} unsent` } : {}),
-    actions: [...controls, { command: "reviewer.folders", icon: icon("folder"), tooltip: changes ? "Folders" : "Back to the changes", selected: !changes }],
+    actions: [...controls, { command: "reviewer.folders", icon: icon("folder"), tooltip: changes ? "Folders" : "Back to the changes", selected: !changes },
+      { command: "reviewer.settings", icon: icon("gear"), tooltip: "Settings (,)" }],
   };
 }
 

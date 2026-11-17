@@ -101,6 +101,13 @@ file and line (with its scope, when not Uncommitted), the commented lines, and y
 the same tab and moves the keyboard there. It does not press Enter: you read it and submit. With
 several agents in the tab, a picker asks which one. Sending clears the comments.
 
+**Settings.** `,`, or the **Settings** button (a gear in the pane header), opens the settings.
+Layout, diff, file list, and wrap are the choices `l`, `w`, `z`, and the wrap button make, and a
+change shows in open panes at once. Starting scope, This session, and Markdown set how a new pane
+starts. Limits set how often the changes are read again, how many files, diff lines, and
+characters per line are shown, and how many commits `G` lists; open panes follow them at once.
+Choices are kept for every reviewer, across restarts. Esc or the × closes the settings.
+
 ### Keys
 
 | Key | Action |
@@ -124,6 +131,7 @@ several agents in the tab, a picker asks which one. Sending clears the comments.
 | `P` | Search the changed lines of every listed file |
 | `w` | Switch the diff between one column and old beside new (kept for every reviewer, across restarts); beside, each side takes half the pane and cuts long lines unless they wrap |
 | `z` | Switch the file list between a folder tree and a flat list (kept for every reviewer, across restarts) |
+| `,` | Open the settings |
 | `B` / `G` | Pick the base branch / pick commits |
 | `Esc` | Clear the selection and the find matches, or cancel the comment box or a picker |
 | `Enter` | Save the comment box, close the find box, or choose in a picker |
@@ -139,7 +147,7 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 `reviewer.comment`, `reviewer.edit`, `reviewer.delete`, `reviewer.copy`, `reviewer.send`,
 `reviewer.layout`, `reviewer.cancel`, `reviewer.scope-uncommitted`, `reviewer.scope-branch`,
 `reviewer.scope-turn`, `reviewer.scope-commits`, `reviewer.session-only`, `reviewer.pick-base`,
-`reviewer.pick-commits`, `reviewer.file-view`, `reviewer.diff-view`, `reviewer.markdown`, `reviewer.find`, `reviewer.next-match`, `reviewer.prev-match`, `reviewer.find-file`, `reviewer.search-code`, `reviewer.folders`, `reviewer.wrap` (wraps long lines, kept for every
+`reviewer.pick-commits`, `reviewer.file-view`, `reviewer.diff-view`, `reviewer.markdown`, `reviewer.find`, `reviewer.next-match`, `reviewer.prev-match`, `reviewer.find-file`, `reviewer.search-code`, `reviewer.folders`, `reviewer.settings`, `reviewer.wrap` (wraps long lines, kept for every
 reviewer across restarts; no key by default), and
 `reviewer.toggle-repo` (collapses or expands the selected file's repo; no key by default).
 
@@ -184,8 +192,10 @@ reviewer across restarts; no key by default), and
 - Files over 1 MiB, and untracked files that are not UTF-8 text, are listed but their contents
   are not shown.
 - Up to 10 folders can be watched, base folder included.
-- Lines longer than 500 characters are shown without syntax colors. Up to 1,000 changed files
-  per repo and 1,500 diff lines per file are shown; past those, a notice says the view is cut.
+- Lines longer than 500 characters are shown without syntax colors. By default, up to 1,000
+  changed files per repo and 1,500 diff lines per file are shown, and lines are cut at 4,000
+  characters; past those, a notice says the view is cut. Settings can change them, but files
+  shown can't go past 1,000: the list would get too slow to draw.
 
 ## Roadmap
 

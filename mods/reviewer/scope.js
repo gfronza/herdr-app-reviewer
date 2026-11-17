@@ -26,13 +26,16 @@ export async function resolveRoots(folders, exec) {
 // "this session only" filter: it keeps the files it holds, except in the repos it cannot judge,
 // which keep every file and say why. `hidden` names the files it took out; `heads` maps each
 // repo root to the branch it is on.
-/** @param {Scope} scope @param {{ files: Set<string>, blind: Map<string, string> } | null} [only] */
-export async function collectScope(folders, scope, exec, readText, only = null) {
+/**
+ * @param {Scope} scope @param {{ files: Set<string>, blind: Map<string, string> } | null} [only]
+ * @param {typeof import("./git.js").LIMITS} [limits]
+ */
+export async function collectScope(folders, scope, exec, readText, only = null, limits) {
   const { resolved, roots } = await resolveRoots(folders, exec);
   const heads = Object.fromEntries(await Promise.all(roots.map(async (root) => [root, await headName(root, exec)])));
   const hidden = new Set();
   const repos = (await Promise.all(roots.filter((root) => scope.kind !== "commits" || root === scope.root)
-    .map((root) => repoIn(root, scope, exec, readText))))
+    .map((root) => repoIn(root, scope, exec, readText, limits))))
     .map((r) => {
       if (!only) return r;
       if (only.blind.has(r.root)) return { ...r, problem: r.problem ?? `showing every file: this session can't be told apart here (${only.blind.get(r.root)})` };
@@ -49,17 +52,17 @@ export async function collectScope(folders, scope, exec, readText, only = null) 
 
 const NONE = { files: [], cut: false };
 
-/** @param {Scope} scope */
-async function repoIn(root, scope, exec, readText) {
+/** @param {Scope} scope @param {typeof import("./git.js").LIMITS} [limits] */
+async function repoIn(root, scope, exec, readText, limits) {
   if (scope.kind === "branch") {
     const { base, missing, range, problem } = await branchRange(root, scope.bases[root], exec);
-    const changes = range ? await listChanges(root, exec, readText, range) : NONE;
+    const changes = range ? await listChanges(root, exec, readText, range, limits) : NONE;
     return { root, range, label: base && `branch vs ${base}`, base, missing, problem, ...changes };
   }
   if (scope.kind === "commits") {
     const range = await commitsRange(root, scope.first, scope.last, exec);
     const label = scope.first === scope.last ? `commit ${scope.first.slice(0, 7)}` : `commits ${scope.first.slice(0, 7)} to ${scope.last.slice(0, 7)}`;
-    const changes = range ? await listChanges(root, exec, readText, range) : NONE;
+    const changes = range ? await listChanges(root, exec, readText, range, limits) : NONE;
     return { root, range, label, base: null, missing: null, problem: range ? null : "those commits are gone: press G to pick again", ...changes };
   }
   if (scope.kind === "turn") {
@@ -68,8 +71,8 @@ async function repoIn(root, scope, exec, readText) {
       : scope.raced ? "files changed just as the turn started, so this turn is not shown"
       : !r ? "watched only after the turn started" : r.problem ?? null;
     const range = problem ? null : { from: r.from, to: r.to, objects: scope.objects };
-    const changes = range ? await listChanges(root, exec, readText, range) : NONE;
+    const changes = range ? await listChanges(root, exec, readText, range, limits) : NONE;
     return { root, range, label: "last turn", base: null, missing: null, problem, ...changes };
   }
-  return { root, range: null, label: null, base: null, missing: null, problem: null, ...(await listChanges(root, exec, readText)) };
+  return { root, range: null, label: null, base: null, missing: null, problem: null, ...(await listChanges(root, exec, readText, undefined, limits)) };
 }

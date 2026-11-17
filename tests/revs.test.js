@@ -180,6 +180,7 @@ test("listCommits: HEAD's commits newest first, with subject", async () => {
   assert.deepEqual(commits.map((c) => [c.sha, c.subject]), [[two, "two"], [head(repo, "HEAD~1"), "init"]]);
   assert.equal(commits[0].root, repo);
   assert.equal(commits[0].short, two.slice(0, 7));
+  assert.deepEqual((await listCommits(repo, exec, 1)).map((c) => c.sha), [two]);
   const empty = tmp();
   gitIn(empty, "init", "-q");
   assert.deepEqual(await listCommits(empty, exec), []);

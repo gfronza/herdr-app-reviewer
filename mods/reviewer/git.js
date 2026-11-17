@@ -2,9 +2,8 @@
 // the reviewer must never change a watched repo, and a folder watch would see the write.
 export const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
 
-const MAX_FILES = 1000;
-const MAX_ROWS = 1500;
-const MAX_LINE = 4000;
+// Past these, a file list or a diff is cut and says so: files per repo, rows per diff, characters per line.
+export const LIMITS = { files: 1000, rows: 1500, line: 4000 };
 
 async function git(root, args, exec) {
   const r = await exec("git", [...READ, ...args], { cwd: root });
@@ -109,8 +108,9 @@ const withObjects = (exec, range) => (range?.objects ? (cmd, args, opts) => exec
 /**
  * Without a range, every uncommitted change; with one, the diff across that range.
  * @param {Range} [range]
+ * @param {typeof LIMITS} [limits]
  */
-export async function listChanges(root, exec, readText, range) {
+export async function listChanges(root, exec, readText, range, limits = LIMITS) {
   exec = withObjects(exec, range);
   const head = range ? true : await hasHead(root, exec);
   const [codes, stats] = await Promise.all([
@@ -121,13 +121,13 @@ export async function listChanges(root, exec, readText, range) {
   // whose content did not; numstat compares content and leaves those out.
   const paths = [...codes.keys()].filter((p) => !range || codes.get(p) === "??" || stats.has(p))
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  const files = await mapInWaves(paths.slice(0, MAX_FILES), (path) => {
+  const files = await mapInWaves(paths.slice(0, limits.files), (path) => {
     const xy = codes.get(path);
     if (xy === "??" || !head) return newFile(root, path, xy, readText);
     const { add, del, binary } = stats.get(path) ?? { add: 0, del: 0, binary: false };
     return { path, status: statusOf(xy), add, del, untracked: false, binary };
   });
-  return { files, cut: paths.length > MAX_FILES };
+  return { files, cut: paths.length > limits.files };
 }
 
 // Text draws a tab as nothing: pad each to the next 4-column stop. A split, not a regex:
@@ -139,59 +139,59 @@ function untab(text) {
   return out;
 }
 
-function rowText(raw) {
-  const text = untab(raw.slice(0, MAX_LINE + 1));
-  return text.length > MAX_LINE ? text.slice(0, MAX_LINE - 1) + "…" : text;
+function rowText(raw, max) {
+  const text = untab(raw.slice(0, max + 1));
+  return text.length > max ? text.slice(0, max - 1) + "…" : text;
 }
 
-function capRows(rows) {
-  return { rows: rows.slice(0, MAX_ROWS), cut: rows.length > MAX_ROWS, notice: null };
+function capRows(rows, max) {
+  return { rows: rows.slice(0, max), cut: rows.length > max, notice: null };
 }
 
 const BINARY = { rows: [], cut: false, notice: "Binary file · no text diff" };
 // readTextFile gives null past 1 MiB, and the mod passes null for bytes that are not UTF-8.
 const UNREADABLE = { rows: [], cut: false, notice: "Not shown: over 1 MiB, or not UTF-8 text" };
 
-function addedRows(text) {
+function addedRows(text, limits) {
   const n = lineCount(text);
   if (!n) return { rows: [], cut: false, notice: null };
-  const lines = text.split("\n", Math.min(n, MAX_ROWS));
+  const lines = text.split("\n", Math.min(n, limits.rows));
   const rows = [{ kind: "hunk", old: null, new: null, text: `@@ -0,0 +1,${n} @@` }];
-  lines.forEach((line, i) => rows.push({ kind: "add", old: null, new: i + 1, text: rowText(line) }));
-  return { rows: rows.slice(0, MAX_ROWS), cut: n + 1 > MAX_ROWS, notice: null };
+  lines.forEach((line, i) => rows.push({ kind: "add", old: null, new: i + 1, text: rowText(line, limits.line) }));
+  return { rows: rows.slice(0, limits.rows), cut: n + 1 > limits.rows, notice: null };
 }
 
-function parseDiff(out) {
+function parseDiff(out, limits) {
   const rows = [];
   let old = 0, next = 0, inHunk = false;
   for (const line of out.split("\n")) {
-    if (rows.length > MAX_ROWS) break;
+    if (rows.length > limits.rows) break;
     const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line);
     if (header) {
       old = Number(header[1]); next = Number(header[2]); inHunk = true;
-      rows.push({ kind: "hunk", old: null, new: null, text: rowText(line) });
+      rows.push({ kind: "hunk", old: null, new: null, text: rowText(line, limits.line) });
     } else if (line.startsWith("diff ")) inHunk = false;
     else if (!inHunk) continue;
-    else if (line[0] === "+") rows.push({ kind: "add", old: null, new: next++, text: rowText(line.slice(1)) });
-    else if (line[0] === "-") rows.push({ kind: "del", old: old++, new: null, text: rowText(line.slice(1)) });
-    else if (line[0] === " ") rows.push({ kind: "ctx", old: old++, new: next++, text: rowText(line.slice(1)) });
+    else if (line[0] === "+") rows.push({ kind: "add", old: null, new: next++, text: rowText(line.slice(1), limits.line) });
+    else if (line[0] === "-") rows.push({ kind: "del", old: old++, new: null, text: rowText(line.slice(1), limits.line) });
+    else if (line[0] === " ") rows.push({ kind: "ctx", old: old++, new: next++, text: rowText(line.slice(1), limits.line) });
   }
   return rows;
 }
 
-/** @param {Range} [range] */
-export async function fileDiff(root, file, exec, readText, range) {
+/** @param {Range} [range] @param {typeof LIMITS} [limits] */
+export async function fileDiff(root, file, exec, readText, range, limits = LIMITS) {
   exec = withObjects(exec, range);
   if (file.untracked || (!range && !(await hasHead(root, exec)))) {
     const text = await readText(`${root}/${file.path}`);
     if (text === null) return UNREADABLE;
-    return text.includes("\0") ? BINARY : addedRows(text);
+    return text.includes("\0") ? BINARY : addedRows(text, limits);
   }
   // Literal, so a name like "f[1].txt" or ":foo" cannot match another file.
   const out = await git(root, ["diff", ...revs(range), "--no-ext-diff", "--no-textconv", "--no-color", "--", `:(literal)${file.path}`], exec);
-  const rows = parseDiff(out);
+  const rows = parseDiff(out, limits);
   if (!rows.length && /^Binary files /m.test(out)) return BINARY;
-  return capRows(rows);
+  return capRows(rows, limits.rows);
 }
 
 // readTextFile's limit, in bytes.

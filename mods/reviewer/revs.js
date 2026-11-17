@@ -95,11 +95,9 @@ export async function listBranches(root, exec) {
     .map(([, name, age]) => ({ name, age }));
 }
 
-const COMMITS = 100;
-
-/** HEAD's latest commits, newest first. */
-export async function listCommits(root, exec) {
-  const out = await tryGit(root, ["log", `-n${COMMITS}`, "--format=%H%x00%h%x00%ct%x00%cr%x00%s", "HEAD", "--"], exec);
+/** HEAD's latest `count` commits, newest first. */
+export async function listCommits(root, exec, count = 100) {
+  const out = await tryGit(root, ["log", `-n${count}`, "--format=%H%x00%h%x00%ct%x00%cr%x00%s", "HEAD", "--"], exec);
   return (out ? out.split("\n") : []).map((line) => {
     const [sha, short, time, age, subject] = line.split("\0");
     return { root, sha, short, time: Number(time), age, subject };

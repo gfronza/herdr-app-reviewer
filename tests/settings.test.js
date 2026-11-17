@@ -8,7 +8,7 @@ const reader = (state) => (key) => state[key];
 test("valueOf: every setting reads its default when nothing is stored", () => {
   const read = reader({});
   assert.deepEqual(Object.fromEntries(OPTIONS.map((o) => [o.key, valueOf(o.key, read)])), {
-    layout: "stacked", diff: "unified", show: "one", files: "tree", wrap: "off", scope: "uncommitted", session: "off", markdown: "diff",
+    layout: "stacked", diff: "unified", show: "one", files: "tree", wrap: "off", textSize: "same", scope: "uncommitted", session: "off", markdown: "diff",
     refresh: "10", fileLimit: "1000", diffLines: "1500", lineLength: "4000", commits: "100",
   });
 });
@@ -26,6 +26,10 @@ test("valueOf: the other settings read their entry in the settings object", () =
 test("valueOf: a stored value that is not a choice reads as the default", () => {
   const read = reader({ "reviewer.layout": "diagonal", [SETTINGS_KEY]: { scope: "commits", session: true } });
   assert.deepEqual(["layout", "scope", "session"].map((k) => valueOf(k, read)), ["stacked", "uncommitted", "off"]);
+});
+
+test("OPTIONS: the text size choices keep their order, smallest first", () => {
+  assert.deepEqual(Object.values(OPTIONS.find((o) => o.key === "textSize").choices), ["−2", "−1", "Terminal", "+1", "+2"]);
 });
 
 test("labelOf: the chosen value as its choice reads, the default when nothing is stored", () => {

@@ -80,6 +80,8 @@ const allFiles = () => valueOf("show", shared) === "all";
 const treeView = () => valueOf("files", shared) === "tree";
 const splitDiff = () => valueOf("diff", shared) === "split";
 const wrapLines = () => valueOf("wrap", shared) === "on";
+// What the diff is built from: one file, or every file in the list's order, which the tree and flat lists differ in.
+const showing = () => (allFiles() ? `all-${valueOf("files", shared)}` : "one");
 const saveSetting = (/** @type {string} */ key, /** @type {string} */ value) => setShared(...writeOf(key, value, shared));
 const gitLimits = () => ({ files: Number(valueOf("fileLimit", shared)), rows: Number(valueOf("diffLines", shared)), line: Number(valueOf("lineLength", shared)) });
 
@@ -116,7 +118,7 @@ export default class Reviewer extends View {
     this.scope = null; this.files = []; this.selected = null; this.diff = null; this.hl = null; this.hlGen = 0;
     this.area = "files"; this.cursor = 0; this.sel = null; this.comments = []; this.nextId = 1;
     this.box = null; this.picking = null; this.view = "changes"; this.notice = null; this.watching = new Map();
-    this.visible = []; this.shown = { start: 0, end: 0 }; this.textWidth = 0; this.charWidth = 0; this.showsAll = allFiles();
+    this.visible = []; this.shown = { start: 0, end: 0 }; this.textWidth = 0; this.charWidth = 0; this.shows = showing();
     this.rendered = valueOf("markdown", shared) === "rendered";
     this.sessionOnly = valueOf("session", shared) === "on"; this.since = new Date(); this.observe = createTracker(); this.turnError = null;
     // A turn's snapshots stay while an unsent comment, or one being written, can still be diffed.
@@ -145,10 +147,11 @@ export default class Reviewer extends View {
     this.refresh(cx);
   }
 
-  // The settings screen can change what the diff shows too, so a change is noticed here, not where it is made.
+  // The settings screen can change what the diff shows, and the list's order, too, so a change is
+  // noticed here, not where it is made.
   followShow(cx) {
-    if (allFiles() === this.showsAll) return;
-    this.showsAll = allFiles();
+    if (showing() === this.shows) return;
+    this.shows = showing();
     cx.spawn(async (cx) => {
       try { await this.loadDiff(cx, true); } catch (e) { this.error = String(e); }
       cx.notify();
@@ -273,11 +276,11 @@ export default class Reviewer extends View {
 
   // The selected file's diff, or with all files every listed file's, in list order with folds ignored.
   async loadDiff(cx, reveal = false) {
-    const all = allFiles(), spec = this.spec, key = this.selected;
+    const all = allFiles(), shows = showing(), spec = this.spec, key = this.selected;
     const entries = all ? this.shownFiles(new Set()) : this.files.filter((f) => entryKey(f) === key);
     if (!entries.length) { this.setDiff(null, cx); return; }
     const parts = all ? await this.readAll(entries) : [await this.readPart(this.partOf(entries[0]), true)];
-    if (this.spec !== spec || allFiles() !== all || (!all && this.selected !== key)) return;
+    if (this.spec !== spec || showing() !== shows || (!all && this.selected !== key)) return;
     const before = this.diff;
     this.setDiff({ ...joinDiffs(parts, all), all, listed: entries.length }, cx);
     this.cursor = keepCursor(before, this.cursor, this.diff);
@@ -714,7 +717,7 @@ export default class Reviewer extends View {
       "pick-base": () => this.openBasePicker(null, cx),
       "pick-commits": () => this.openCommitPicker(cx),
       "toggle-repo": () => this.fold(this.selectedRoot()),
-      "file-view": () => saveSetting("files", treeView() ? "flat" : "tree"),
+      "file-view": () => { saveSetting("files", treeView() ? "flat" : "tree"); this.followShow(cx); },
       "diff-view": () => saveSetting("diff", splitDiff() ? "unified" : "split"),
       "all-files": () => { saveSetting("show", allFiles() ? "one" : "all"); this.followShow(cx); },
       markdown: () => {

@@ -1,6 +1,7 @@
-// What the pane header shows for a reviewer pane. A header mod that reads the shared key
-// `pane-heads` (the key Better Changes uses for its diff panes) draws the title, the folder and
-// these controls; each control names the command the header runs when it is clicked.
+// What the pane header shows for a reviewer pane, under the pane-heads contract
+// (https://github.com/lucindo/herdr-app-pane-header/blob/main/CONTRACT.md): a header mod that
+// follows it draws the title, the folder and these controls; each control names the command the
+// header runs when it is clicked.
 export const HEADS_KEY = "pane-heads";
 
 const icon = (name) => `mods/reviewer/icons/${name}.svg`;
@@ -34,16 +35,36 @@ export function headEntry(s) {
   };
 }
 
-// Header mods that draw `actions` list themselves here.
+// Header mods register here, with the fields they draw: { "<mod>": { version, draws: [...] } }.
+export const HEADERS_KEY = "pane-heads-headers";
+// Header mods from before that registry (contract v0) that draw `actions` list themselves here.
 export const ACTIONS_KEY = "pane-heads-actions";
 
-const paneHeader = (node) => node?.content?.pane?.header ?? (node?.children ?? []).map(paneHeader).find(Boolean) ?? null;
+// The pane frame of the first visible tab block: hidden nodes skipped, a stack's shown child only.
+function paneFrame(node) {
+  if (!node || node.hidden) return null;
+  if (node.content?.tab && node.content.pane) return node.content.pane;
+  let children = node.children ?? [];
+  if (node.type === "stack") {
+    const visible = children.filter((c) => !c.hidden);
+    children = [visible.find((c) => c.id === node.active) ?? visible[0]];
+  }
+  for (const child of children) {
+    const frame = paneFrame(child);
+    if (frame) return frame;
+  }
+  return null;
+}
 
-/** Whether the layout's pane header draws the controls, so the reviewer can leave its own rows out.
+/** Whether the shown layout's pane header draws the controls, so the reviewer can leave its own rows out.
  *  A header shown only on hover would hide them most of the time. */
-export function headerShowsControls(layout, actionMods) {
-  const header = paneHeader(layout);
-  return Boolean(header) && (header.reveal ?? "always") === "always" && (actionMods ?? []).includes(header.content?.mod);
+export function headerShowsControls(layout, headers, actionMods) {
+  const header = paneFrame(layout)?.header;
+  if (!header || (header.reveal ?? "always") !== "always") return false;
+  const mod = header.content?.mod;
+  const registered = headers?.[mod];
+  if (registered) return registered.version >= 1 && Array.isArray(registered.draws) && registered.draws.includes("actions");
+  return (actionMods ?? []).includes(mod);
 }
 
 /** Drops the entries of panes that are gone; `pane-heads` is persisted and would otherwise grow. */

@@ -16,7 +16,7 @@ import { lastLine, spans, splitLines } from "./split.js";
 import { findRows, markRuns, nextMatch, searchFiles } from "./find.js";
 import { ACTIONS_KEY, HEADS_KEY, headEntry, headerShowsControls, pruneHeads } from "./head.js";
 import { wrapRuns, wrappedLines } from "./wrap.js";
-import { OPTIONS, valueOf, writeOf } from "./settings.js";
+import { OPTIONS, labelOf, valueOf, writeOf } from "./settings.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
@@ -75,6 +75,7 @@ const treeView = () => valueOf("files", shared) === "tree";
 const splitDiff = () => valueOf("diff", shared) === "split";
 const wrapLines = () => valueOf("wrap", shared) === "on";
 const saveSetting = (/** @type {string} */ key, /** @type {string} */ value) => setShared(...writeOf(key, value, shared));
+const gitLimits = () => ({ files: Number(valueOf("fileLimit", shared)), rows: Number(valueOf("diffLines", shared)), line: Number(valueOf("lineLength", shared)) });
 
 // Picked bases for the branch scope, keyed by repo root (one per worktree), kept across restarts.
 const bases = () => /** @type {Record<string, string>} */ (shared(BASES_KEY) ?? {});
@@ -117,7 +118,8 @@ export default class Reviewer extends View {
       name: this.tab,
       keep: () => new Set([...this.comments, this.box?.draft].filter(Boolean).map((c) => turnOf(c.scope.key))),
     });
-    cx.timer.every(250, (cx) => { this.followAgents(cx); this.publishHead(); });
+    this.timed = { at: Date.now(), limits: JSON.stringify(gitLimits()) };
+    cx.timer.every(250, (cx) => { this.followAgents(cx); this.publishHead(); this.refreshWhenDue(cx); });
     cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
@@ -126,7 +128,14 @@ export default class Reviewer extends View {
         cx.notify();
       }
     });
-    cx.timer.every(10000, (cx) => this.refresh(cx));
+    this.refresh(cx);
+  }
+
+  // On the interval the settings set, and at once when a limit there changes, so the lists follow it.
+  refreshWhenDue(cx) {
+    const limits = JSON.stringify(gitLimits());
+    if (limits === this.timed.limits && Date.now() - this.timed.at < Number(valueOf("refresh", shared)) * 1000) return;
+    this.timed = { at: Date.now(), limits };
     this.refresh(cx);
   }
 
@@ -173,7 +182,7 @@ export default class Reviewer extends View {
           this.again = false;
           if (this.scopeKind === "turn" || this.sessionOnly) await this.turns.refresh();
           const spec = this.scopeSpec(), only = this.sessionOnly ? this.turns.session() : null;
-          const scope = await collectScope(this.folders(), spec, run_exec, readText, only);
+          const scope = await collectScope(this.folders(), spec, run_exec, readText, only, gitLimits());
           // The scope, a base, a turn, or the session filter changed while this pass ran: its result belongs to neither.
           if (JSON.stringify(spec) !== JSON.stringify(this.scopeSpec()) || Boolean(only) !== this.sessionOnly) { this.again = true; continue; }
           this.scope = scope; this.spec = spec;
@@ -250,7 +259,7 @@ export default class Reviewer extends View {
     if (!entry) { this.setDiff(null, cx); return; }
     const spec = this.spec;
     const [result, text] = await Promise.all([
-      fileDiff(entry.root, entry.file, run_exec, readText, entry.range),
+      fileDiff(entry.root, entry.file, run_exec, readText, entry.range, gitLimits()),
       isMarkdown(entry.file.path) ? fileText(entry.root, entry.file.path, run_exec, readText, entry.range) : null,
     ]);
     if (this.selected !== entryKey(entry) || this.spec !== spec) return;
@@ -387,7 +396,7 @@ export default class Reviewer extends View {
       const { root, path, scope, untracked } = list[0];
       const entry = this.spec && scope.key === this.keyFor(root) ? this.files.find((f) => !f.key && f.root === root && f.file.path === path) : null;
       const file = entry?.file ?? { path, untracked };
-      const rows = (await fileDiff(root, file, run_exec, readText, entry ? entry.range : scope.range).catch(() => ({ rows: [] }))).rows;
+      const rows = (await fileDiff(root, file, run_exec, readText, entry ? entry.range : scope.range, gitLimits()).catch(() => ({ rows: [] }))).rows;
       for (const c of list) if (locate(c, rows).stale) stale.add(c.id);
     }
     return formatReview(this.comments, stale);
@@ -471,7 +480,7 @@ export default class Reviewer extends View {
     const roots = this.watchedRoots();
     if (!roots.length) { this.say("No repository to pick commits from", cx); return; }
     this.openChooser({ kind: "commits", several: roots.length > 1 }, async () => {
-      const logs = await Promise.all(roots.map((root) => listCommits(root, run_exec)));
+      const logs = await Promise.all(roots.map((root) => listCommits(root, run_exec, Number(valueOf("commits", shared)))));
       return { items: logs.flat().sort((a, b) => b.time - a.time) };
     }, cx);
   }
@@ -491,7 +500,7 @@ export default class Reviewer extends View {
       for (let i = 0; i < entries.length && rows < SEARCH_ROWS; i += 16) {
         // A diff cut short, unreadable, or failed is searched as far as it goes and counted, so "No matches" is not taken at its word.
         const wave = await Promise.all(entries.slice(i, i + 16).map(async (entry) => {
-          const d = await fileDiff(entry.root, entry.file, run_exec, readText, entry.range).catch(() => null);
+          const d = await fileDiff(entry.root, entry.file, run_exec, readText, entry.range, gitLimits()).catch(() => null);
           return { entry, rows: d?.rows ?? [], partial: !d || d.cut || Boolean(d.notice) };
         }));
         if (this.chooser !== c) return {};
@@ -629,7 +638,7 @@ export default class Reviewer extends View {
       layout: () => saveSetting("layout", sideBySide() ? "stacked" : "side"),
       wrap: () => saveSetting("wrap", wrapLines() ? "off" : "on"),
       folders: () => { this.view = this.view === "folders" ? "changes" : "folders"; },
-      settings: () => openOverlay({ mod: "reviewer", kind: "dialog", width: 540, height: 520, props: { screen: "settings" } }),
+      settings: () => openOverlay({ mod: "reviewer", kind: "dialog", width: 540, height: 640, props: { screen: "settings" } }),
       "scope-uncommitted": () => this.setScope("uncommitted", cx),
       "scope-branch": () => this.setScope("branch", cx),
       "scope-turn": () => this.setScope("turn", cx),
@@ -847,10 +856,10 @@ export default class Reviewer extends View {
 
   // The dialog `,` opens: each setting as segment buttons, saved on click.
   settingsView(t) {
-    const group = (title, note, options) => v_flex()
+    const group = (title, note, id) => v_flex()
       .child(div().pt(16).text_size(11).font_semibold().text_color(t.dim).child(title.toUpperCase()))
       .child(div().pb(4).text_size(11).text_color(t.dim).child(note))
-      .children(options.map((o) => this.settingRow(t, o)));
+      .children(OPTIONS.filter((o) => o.group === id).map((o) => this.settingRow(t, o)));
     return v_flex().id("reviewer-settings").size_full().overflow_y_scroll().px(24).py(18).bg(t.popover).text_color(t.foreground).text_size(13)
       .track_focus(this.handle)
       .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); closeOverlay(props().overlay); } })
@@ -859,8 +868,9 @@ export default class Reviewer extends View {
         .child(div().id("settings-close").p(4).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
           .on_click(() => closeOverlay(props().overlay))
           .child(svg("mods/reviewer/icons/close.svg").size(14).text_color(t.muted))))
-      .child(group("Every pane", "Open panes change at once", OPTIONS.filter((o) => !o.start)))
-      .child(group("New panes", "Panes opened after a change start this way", OPTIONS.filter((o) => o.start)));
+      .child(group("Every pane", "Open panes change at once", "view"))
+      .child(group("New panes", "Panes opened after a change start this way", "start"))
+      .child(group("Limits", "Open panes read the changes again with the new values", "limits"));
   }
 
   settingRow(t, o) {
@@ -966,7 +976,7 @@ export default class Reviewer extends View {
           .when(Boolean(r.problem), (e) => e.child(note(t, r.problem)))
           .when(!r.problem && !r.files.length, (e) => e.child(note(t, `No changes${this.sessionOnly ? " from this session's turns" : ""} ${r.base ? `since ${r.base}` : `in ${r.label}`}`)))
           .children(rows.map((row) => this.listRow(t, row)))
-          .when(r.cut && !this.collapsed.has(r.root), (e) => e.child(note(t, "Showing the first 1,000 changed files")))))
+          .when(r.cut && !this.collapsed.has(r.root), (e) => e.child(note(t, `Showing the first ${labelOf("fileLimit", shared)} changed files`)))))
         .children(kept.map(({ title, rows }) => v_flex()
           .child(h_flex().h(24).px(6).items_center().text_size(11).font_semibold().child(title))
           .children(rows.map((row) => this.listRow(t, row)))))
@@ -1046,7 +1056,7 @@ export default class Reviewer extends View {
     // overflow_x_scrollbar() wraps its child, so the flex size goes on a plain parent.
     return v_flex().flex_1().min_w(0).min_h(0).font_family(m.font).text_size(m.size)
       .when(Boolean(diff?.notice), (e) => e.child(div().p(12).text_color(t.dim).child(diff.notice)))
-      .when(Boolean(diff?.cut), (e) => e.child(note(t, "Showing the first 1,500 lines")))
+      .when(Boolean(diff?.cut), (e) => e.child(note(t, `Showing the first ${labelOf("diffLines", shared)} lines`)))
       .child(div().id("diff-area").flex_1().min_h(0).relative()
         .when(wrap, (e) => e.child(this.wrapProbe(m, split)))
         .child(div().id("diff-x").size_full().overflow_x_scrollbar()

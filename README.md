@@ -104,7 +104,9 @@ several agents in the tab, a picker asks which one. Sending clears the comments.
 **Settings.** `,`, or the **Settings** button (a gear in the pane header), opens the settings.
 Layout, diff, file list, and wrap are the choices `l`, `w`, `z`, and the wrap button make, and a
 change shows in open panes at once. Starting scope, This session, and Markdown set how a new pane
-starts. Choices are kept for every reviewer, across restarts. Esc or the × closes the settings.
+starts. Limits set how often the changes are read again, how many files, diff lines, and
+characters per line are shown, and how many commits `G` lists; open panes follow them at once.
+Choices are kept for every reviewer, across restarts. Esc or the × closes the settings.
 
 ### Keys
 
@@ -190,8 +192,10 @@ reviewer across restarts; no key by default), and
 - Files over 1 MiB, and untracked files that are not UTF-8 text, are listed but their contents
   are not shown.
 - Up to 10 folders can be watched, base folder included.
-- Lines longer than 500 characters are shown without syntax colors. Up to 1,000 changed files
-  per repo and 1,500 diff lines per file are shown; past those, a notice says the view is cut.
+- Lines longer than 500 characters are shown without syntax colors. By default, up to 1,000
+  changed files per repo and 1,500 diff lines per file are shown, and lines are cut at 4,000
+  characters; past those, a notice says the view is cut. Settings can change them, but files
+  shown can't go past 1,000: the list would get too slow to draw.
 
 ## Roadmap
 

@@ -281,6 +281,7 @@ export default class Reviewer extends View {
     const before = this.diff;
     this.setDiff({ ...joinDiffs(parts, all), all, listed: entries.length }, cx);
     this.cursor = keepCursor(before, this.cursor, this.diff);
+    if (this.sel) this.sel = { anchor: keepCursor(before, this.sel.anchor, this.diff), end: this.sel.end === null ? null : keepCursor(before, this.sel.end, this.diff) };
     this.follow();
     if (reveal) this.reveal(true);
     this.applyPending(cx);
@@ -646,9 +647,11 @@ export default class Reviewer extends View {
     this.closeChooser(cx);
     this.area = row === null ? "files" : "diff";
     if (row === null) { this.select(entry, cx); return; }
-    // A line is found in the diff, not in the rendered file.
-    if (isMarkdown(entry.file.path)) this.rendered = false;
-    if (!allFiles()) this.select(entry, cx);
+    // A line is found in the diff, not in the rendered file; all files never renders one.
+    if (!allFiles()) {
+      if (isMarkdown(entry.file.path)) this.rendered = false;
+      this.select(entry, cx);
+    }
     this.pending = { key: entryKey(entry), row };
     this.applyPending(cx);
   }

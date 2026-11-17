@@ -101,10 +101,10 @@ file and line (with its scope, when not Uncommitted), the commented lines, and y
 the same tab and moves the keyboard there. It does not press Enter: you read it and submit. With
 several agents in the tab, a picker asks which one. Sending clears the comments.
 
-**Settings.** `,` opens the settings. Layout, diff, file list, and wrap are the choices `l`, `w`,
-`z`, and the wrap button make, and a change shows in open panes at once. Starting scope, This
-session, and Markdown set how a new pane starts. Choices are kept for every reviewer, across
-restarts. Esc closes the settings.
+**Settings.** `,`, or the **Settings** button (a gear in the pane header), opens the settings.
+Layout, diff, file list, and wrap are the choices `l`, `w`, `z`, and the wrap button make, and a
+change shows in open panes at once. Starting scope, This session, and Markdown set how a new pane
+starts. Choices are kept for every reviewer, across restarts. Esc closes the settings.
 
 ### Keys
 

@@ -878,7 +878,8 @@ export default class Reviewer extends View {
       .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(this.base ?? "No folder"))
       .when(unsent > 0, (e) => e.child(div().px(6).rounded(4).bg(t.accent).text_color(t.accent_foreground).text_size(11).child(`${unsent} unsent`)))
 
-      .child(button(t, "folders", this.view === "folders" ? "Changes" : "Folders", (cx) => this.act("folders", cx)));
+      .child(button(t, "folders", this.view === "folders" ? "Changes" : "Folders", (cx) => this.act("folders", cx)))
+      .child(button(t, "settings", "Settings", (cx) => this.act("settings", cx)));
   }
 
   // The tab finds the pane: opening a reviewer closes the tab's others first.
@@ -1229,7 +1230,7 @@ export default class Reviewer extends View {
     return h_flex().flex_none().h(28).px(12).gap(12).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
       .child(div().flex_1().min_w(0).truncate().text_color(this.error ? t.blocked : this.notice ? t.foreground : t.dim)
         .child(this.error ?? this.notice ?? (this.findQuery && this.diff && !this.markdownShown() ? `Find "${this.findQuery}": ${this.findStatus()} · n/N next/previous · Esc clears`
-          : "j/k move · ]/[ change · f/F file · c comment · / find · p file · P search · w split · z tree · m markdown · u/b/t/g scope · o session · l layout · y copy · s send")));
+          : "j/k move · ]/[ change · f/F file · c comment · / find · p file · P search · w split · z tree · m markdown · u/b/t/g scope · o session · l layout · y copy · s send · , settings")));
   }
 }
 

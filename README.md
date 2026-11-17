@@ -26,7 +26,8 @@ keeps its main keys.
 
 Press the key in a tab. A reviewer pane opens beside the focused pane, bound to that pane's
 folder (its *base folder*). It stays bound to that folder when you focus other panes. Press the
-key again to close it.
+key again to close it. Its title, controls, and folder sit in one row at the top of the pane;
+point at a control to see what it does and its key.
 
 The pane lists every uncommitted change: staged, unstaged, and untracked files, but not
 git-ignored ones. Changes are grouped by repo, and each repo's files show as a folder tree:
@@ -41,7 +42,7 @@ line beside its new version, and `w` again goes back to one column. The choice i
 reviewer, across restarts. Movement, selection, and comments work the same: `j`/`k` go through a
 changed block's removed lines, then its added ones. A click on a line selects its new side.
 
-**All files.** `a`, or the **All files** button, shows every listed file's diff in one list,
+**All files.** `a`, or its button at the top of the pane, shows every listed file's diff in one list,
 each under a heading with its status, path, and line counts; `a` again shows one file at a time.
 The choice is kept for every reviewer, across restarts. Files come in the file list's order, those in
 collapsed folders included. The file list follows the cursor, and selecting a file, or `f`/`F`,
@@ -67,7 +68,8 @@ with the search text kept as the find text for `n`/`N`. Both search what the cur
 not the rest of the repo. Code search reads every listed diff when it opens; past 100,000 lines it
 says how many files it covered, and it shows the first 200 matches.
 
-**Scopes.** The buttons under the header, or `u`, `b`, `t`, and `g`, choose what the pane diffs:
+**Scopes.** The scope buttons at the top of the pane (Local, Branch, Turn, Commits), or `u`, `b`,
+`t`, and `g`, choose what the pane diffs:
 
 - **Uncommitted** (`u`), the default: changes since the last commit.
 - **Branch** (`b`): everything since the branch left its base, commits and uncommitted changes
@@ -89,10 +91,10 @@ says how many files it covered, and it shows the first 200 matches.
 
 Every reviewer opens on Uncommitted.
 
-**This session only.** The **This session** button, or `o`, narrows any scope to the files the
+**This session only.** The clock button at the top of the pane, or `o`, narrows any scope to the files the
 agent's turns changed since the pane opened. Edits made between turns are left out. Off by default.
 
-**More folders.** Select **Folders** to see the watched folders. **Add folder** opens the system
+**More folders.** The folder button at the top of the pane shows the watched folders. **Add folder** opens the system
 folder picker. A folder inside a repo you already watch adds nothing new; the repo shows once.
 **Remove** takes a folder off the list. The base folder cannot be removed. The list is saved per
 base folder, so it comes back the next time a reviewer opens on that folder.
@@ -109,7 +111,7 @@ file and line (with its scope, when not Uncommitted), the commented lines, and y
 the same tab and moves the keyboard there. It does not press Enter: you read it and submit. With
 several agents in the tab, a picker asks which one. Sending clears the comments.
 
-**Settings.** `,`, or the **Settings** button (a gear in the pane header), opens the settings.
+**Settings.** `,`, or the gear at the top of the pane, opens the settings.
 Layout, diff, what the diff shows, file list, and wrap are the choices `l`, `w`, `a`, `z`, and the
 wrap button make, and a change shows in open panes at once. Diff text size sets the diff at the
 terminal's font size or up to two points from it; the diff otherwise takes the terminal's font,
@@ -183,7 +185,7 @@ reviewer across restarts; no key by default), and
 - It writes its title, folder and controls into the shared key `pane-heads`, under its pane id,
   for a pane header mod that shows them. Each write drops the entries of panes that are gone.
   When the layout's pane header mod is listed in the shared key `pane-heads-actions` and always
-  shows, the pane leaves out its own title and scope rows, since the header shows them.
+  shows, the pane leaves out its own row of title and controls, since the header shows them.
 - It reaches no network.
 
 ## Limitations

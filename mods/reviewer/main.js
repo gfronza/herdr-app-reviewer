@@ -937,13 +937,12 @@ export default class Reviewer extends View {
     if (props()?.screen === "settings") return this.settingsView(theme());
     if (props()?.overlay) return div();
     const t = theme();
-    // When the pane header draws the title and controls (see head.js), these rows would repeat them.
-    const rows = !this.ownPane() || !headerShowsControls(layout(), shared(ACTIONS_KEY));
+    // When the pane header draws the title and controls (see head.js), this row would repeat them.
+    const row = !this.ownPane() || !headerShowsControls(layout(), shared(ACTIONS_KEY));
     return v_flex().id("reviewer").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
       .track_focus(this.handle).on_mouse_down("left", () => this.handle.focus())
       .on_key_down((e, cx) => this.onKey(e, cx))
-      .when(rows, (e) => e.child(this.header(t)))
-      .when(rows && this.view === "changes", (e) => e.child(this.toolbar(t)))
+      .when(row, (e) => e.child(this.controlRow(t)))
       .child(this.view === "folders" ? this.foldersView(t) : this.changesView(t))
       .child(this.footer(t));
   }
@@ -979,15 +978,30 @@ export default class Reviewer extends View {
           .child(label))));
   }
 
-  header(t) {
-    const unsent = this.comments.length;
-    return h_flex().h(36).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
-      .child(div().font_semibold().child("Reviewer"))
-      .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(this.base ?? "No folder"))
-      .when(unsent > 0, (e) => e.child(div().px(6).rounded(4).bg(t.accent).text_color(t.accent_foreground).text_size(11).child(`${unsent} unsent`)))
+  // The header's title and controls as the pane's own row, drawn as a pane header draws them.
+  controlRow(t) {
+    const head = this.head();
+    return h_flex().h(32).flex_none().px(10).gap(8).items_center().border_b(1).border_color(t.border).text_size(12)
+      .child(div().flex_none().font_semibold().child(head.title))
+      .child(h_flex().flex_none().gap(2).items_center().children(head.actions.map((a) => this.control(t, a))))
+      .when(Boolean(head.badge), (e) => e.child(div().flex_none().px(6).rounded(4).bg(t.accent).text_color(t.accent_foreground).text_size(11).child(head.badge)))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(head.detail));
+  }
 
-      .child(button(t, "folders", this.view === "folders" ? "Changes" : "Folders", (cx) => this.act("folders", cx)))
-      .child(button(t, "settings", "Settings", (cx) => this.act("settings", cx)));
+  control(t, a) {
+    const action = a.command.replace(/^reviewer\./, "");
+    const el = div().id(action).flex_none().h(20).flex().items_center().rounded(4).cursor_pointer()
+      .text_color(a.selected ? t.foreground : t.dim).when(Boolean(a.selected), (e) => e.bg(t.selected)).when(Boolean(a.gap), (e) => e.ml(8))
+      .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(a.tooltip)
+      .on_click((_e, cx) => this.act(action, cx));
+    return a.icon ? el.px(3).child(svg(a.icon).size(14)) : el.px(6).text_size(11).child(a.label);
+  }
+
+  head() {
+    return headEntry({
+      base: this.base ?? null, unsent: this.comments.length, view: this.view,
+      scope: this.scopeKind, sessionOnly: this.sessionOnly, allFiles: allFiles(), sideBySide: sideBySide(), wrap: wrapLines(),
+    });
   }
 
   // The tab finds the pane: opening a reviewer closes the tab's others first.
@@ -998,10 +1012,7 @@ export default class Reviewer extends View {
     const pane = this.ownPane();
     if (!pane) return;
     this.headPane = pane;
-    const head = headEntry({
-      base: this.base ?? null, unsent: this.comments.length, view: this.view,
-      scope: this.scopeKind, sessionOnly: this.sessionOnly, allFiles: allFiles(), sideBySide: sideBySide(), wrap: wrapLines(),
-    });
+    const head = this.head();
     const heads = /** @type {Record<string, unknown>} */ (shared(HEADS_KEY) ?? {});
     if (JSON.stringify(heads[pane]) === JSON.stringify(head)) return;
     setShared(HEADS_KEY, { ...pruneHeads(heads, new Set(panes().map((p) => p.pane))), [pane]: head });
@@ -1013,18 +1024,6 @@ export default class Reviewer extends View {
     if (!this.headPane || !(this.headPane in heads)) return;
     const { [this.headPane]: _, ...rest } = heads;
     setShared(HEADS_KEY, rest);
-  }
-
-  // Its own row: beside the header's buttons, the scope tabs ran off a half-width pane.
-  toolbar(t) {
-    return h_flex().h(32).flex_none().px(12).gap(2).items_center().border_b(1).border_color(t.border)
-      .children([["uncommitted", "Uncommitted"], ["branch", "Branch"], ["turn", "Last turn"], ["commits", "Commits"]].map(([kind, label]) =>
-        button(t, `scope-${kind}`, label, (cx) => this.act(`scope-${kind}`, cx)).when(this.scopeKind === kind, (b) => b.bg(t.selected))))
-      .child(div().flex_1())
-      .child(button(t, "session-only", "This session", (cx) => this.act("session-only", cx)).when(this.sessionOnly, (b) => b.bg(t.selected)))
-      .child(button(t, "all-files", "All files", (cx) => this.act("all-files", cx)).when(allFiles(), (b) => b.bg(t.selected)))
-      .child(button(t, "layout", sideBySide() ? "Stacked" : "Side by side", (cx) => this.act("layout", cx)))
-      .child(button(t, "wrap", "Wrap", (cx) => this.act("wrap", cx)).when(wrapLines(), (b) => b.bg(t.selected)));
   }
 
   foldersView(t) {

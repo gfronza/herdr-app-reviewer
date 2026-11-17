@@ -39,15 +39,36 @@ test("pruneHeads: keeps live panes, whoever wrote them, and drops closed ones", 
 
 // A layout shaped like Herdr's: the pane header sits on a tab block a few levels down.
 const layoutWith = (header) => ({ type: "row", children: [{ id: "sidebar" }, { type: "column", children: [{ content: { tab: "active", pane: header ? { header } : {} } }] }] });
+const tabBlock = (id, mod, extra = {}) => ({ id, type: "block", content: { tab: "active", pane: { header: { content: { mod } } } }, ...extra });
+const drawsActions = { "pane-header": { version: 1, draws: ["title", "detail", "actions"] } };
 
-test("headerShowsControls: a listed header mod that always shows draws the controls", () => {
-  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-plus" }, reveal: "always" }), ["pane-plus"]), true);
-  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-plus" } }), ["pane-plus"]), true);
+test("headerShowsControls: a registered header that draws actions and always shows draws the controls", () => {
+  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-header" }, reveal: "always" }), drawsActions, []), true);
+  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-header" } }), drawsActions, null), true);
 });
 
-test("headerShowsControls: an unlisted mod, a hover header, no header, or no list keeps the reviewer's rows", () => {
-  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane" }, reveal: "always" }), ["pane-plus"]), false);
-  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-plus" }, reveal: "hover" }), ["pane-plus"]), false);
-  assert.equal(headerShowsControls(layoutWith(null), ["pane-plus"]), false);
-  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-plus" } }), null), false);
+test("headerShowsControls: a registered header that doesn't draw actions keeps the reviewer's rows, whatever the old list says", () => {
+  const titlesOnly = { "pane-header": { version: 1, draws: ["title", "detail"] } };
+  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-header" } }), titlesOnly, ["pane-header"]), false);
+  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-header" } }), { "pane-header": { version: 1 } }, []), false);
+});
+
+test("headerShowsControls: an unregistered header in the old pane-heads-actions list draws the controls", () => {
+  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-plus" } }), {}, ["pane-plus"]), true);
+  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-plus" } }), null, ["pane-plus"]), true);
+});
+
+test("headerShowsControls: an unknown mod, a hover header, no header, or nothing registered keeps the reviewer's rows", () => {
+  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane" }, reveal: "always" }), drawsActions, ["pane-plus"]), false);
+  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-header" }, reveal: "hover" }), drawsActions, []), false);
+  assert.equal(headerShowsControls(layoutWith(null), drawsActions, ["pane-plus"]), false);
+  assert.equal(headerShowsControls(layoutWith({ content: { mod: "pane-header" } }), null, null), false);
+});
+
+test("headerShowsControls: a hidden tab block is skipped, and a stack counts only its shown child", () => {
+  const hidden = { type: "row", children: [tabBlock("a", "pane-header", { hidden: true }), tabBlock("b", "pane")] };
+  assert.equal(headerShowsControls(hidden, drawsActions, []), false);
+  const stack = { type: "stack", active: "b", children: [tabBlock("a", "pane"), tabBlock("b", "pane-header")] };
+  assert.equal(headerShowsControls(stack, drawsActions, []), true);
+  assert.equal(headerShowsControls({ ...stack, active: "a" }, drawsActions, []), false);
 });

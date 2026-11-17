@@ -183,9 +183,13 @@ reviewer across restarts; no key by default), and
 - It watches those repos for changes on disk.
 - It writes the clipboard when you copy or send.
 - It writes its title, folder and controls into the shared key `pane-heads`, under its pane id,
-  for a pane header mod that shows them. Each write drops the entries of panes that are gone.
-  When the layout's pane header mod is listed in the shared key `pane-heads-actions` and always
-  shows, the pane leaves out its own row of title and controls, since the header shows them.
+  for a pane header that follows the
+  [pane-heads contract](https://github.com/lucindo/herdr-app-pane-header/blob/main/CONTRACT.md),
+  such as [pane-header](https://github.com/lucindo/herdr-app-pane-header). Each write drops the
+  entries of panes that are gone. When the shown layout's pane header always shows and draws
+  controls (its entry in the shared key `pane-heads-headers` lists `actions`, or, for older
+  headers, it is in `pane-heads-actions`), the pane leaves out its own row of title and
+  controls, since the header shows them.
 - It reaches no network.
 
 ## Limitations

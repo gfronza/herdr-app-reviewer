@@ -14,7 +14,7 @@ import { Turns, createTracker, workState } from "./turns.js";
 import { fileRows } from "./tree.js";
 import { lastLine, spans, splitLines } from "./split.js";
 import { findRows, markRuns, nextMatch, searchFiles } from "./find.js";
-import { ACTIONS_KEY, HEADS_KEY, headEntry, headerShowsControls, pruneHeads } from "./head.js";
+import { ACTIONS_KEY, HEADERS_KEY, HEADS_KEY, headEntry, headerShowsControls, pruneHeads } from "./head.js";
 import { wrapRuns, wrappedLines } from "./wrap.js";
 import { OPTIONS, labelOf, valueOf, writeOf } from "./settings.js";
 import { joinDiffs, keepCursor, partAt } from "./all.js";
@@ -938,7 +938,7 @@ export default class Reviewer extends View {
     if (props()?.overlay) return div();
     const t = theme();
     // When the pane header draws the title and controls (see head.js), this row would repeat them.
-    const row = !this.ownPane() || !headerShowsControls(layout(), shared(ACTIONS_KEY));
+    const row = !this.ownPane() || !headerShowsControls(layout(), shared(HEADERS_KEY), shared(ACTIONS_KEY));
     return v_flex().id("reviewer").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
       .track_focus(this.handle).on_mouse_down("left", () => this.handle.focus())
       .on_key_down((e, cx) => this.onKey(e, cx))

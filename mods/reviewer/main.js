@@ -22,10 +22,19 @@ import { joinDiffs, keepCursor, partAt } from "./all.js";
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
 
-// The diff reads like the terminals beside it; its row and column sizes were tuned at 12px.
+// The terminal's line height in ems for its usual fonts (Monaco 1.333, JetBrains Mono 1.32): a terminal
+// row is the font's own line height times terminal_line_height, and a mod can't read font metrics.
+const LINE_EMS = 4 / 3;
+
+// The diff reads like the terminals beside it: their font, weight and row height, at their size or a
+// few points from it. Its gutter and column sizes were tuned at 12px.
 function diffMetrics() {
-  const s = settings(), size = Number(s.font_size ?? 12), k = size / 12;
-  return { font: String(s.font_family ?? "JetBrains Mono"), size, row: Math.round(20 * k), gutter: Math.round(34 * k), char: 7 * k };
+  const s = settings(), step = valueOf("textSize", shared);
+  const size = Number(s.font_size ?? 12) + (step === "same" ? 0 : Number(step)), k = size / 12;
+  return {
+    font: String(s.font_family ?? "JetBrains Mono"), weight: Number(s.font_weight ?? 500), size,
+    row: Math.round(size * LINE_EMS * Number(s.terminal_line_height ?? 1)), gutter: Math.round(34 * k), char: 7 * k,
+  };
 }
 
 const KEYS = {
@@ -1143,7 +1152,7 @@ export default class Reviewer extends View {
     const heights = cols ? items.map((it) => m.row * lines(it)) : m.row;
     const sel = this.range();
     // overflow_x_scrollbar() wraps its child, so the flex size goes on a plain parent.
-    return v_flex().flex_1().min_w(0).min_h(0).font_family(m.font).text_size(m.size)
+    return v_flex().flex_1().min_w(0).min_h(0).font_family(m.font).font_weight(m.weight).text_size(m.size).line_height(`${m.row}px`)
       .when(Boolean(one?.notice), (e) => e.child(div().p(12).text_color(t.dim).child(one.notice)))
       .when(Boolean(one?.cut), (e) => e.child(note(t, `Showing the first ${labelOf("diffLines", shared)} lines`)))
       .when(Boolean(diff?.all) && diff.parts.length < diff.listed, (e) => e.child(note(t, `Showing the first ${diff.parts.length} of ${diff.listed} files · a shows one file at a time`)))

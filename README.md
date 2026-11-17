@@ -111,7 +111,9 @@ several agents in the tab, a picker asks which one. Sending clears the comments.
 
 **Settings.** `,`, or the **Settings** button (a gear in the pane header), opens the settings.
 Layout, diff, what the diff shows, file list, and wrap are the choices `l`, `w`, `a`, `z`, and the
-wrap button make, and a change shows in open panes at once. Starting scope, This session, and Markdown set how a new pane
+wrap button make, and a change shows in open panes at once. Diff text size sets the diff at the
+terminal's font size or up to two points from it; the diff otherwise takes the terminal's font,
+weight, and line height. Starting scope, This session, and Markdown set how a new pane
 starts. Limits set how often the changes are read again, how many files, diff lines, and
 characters per line are shown, and how many commits `G` lists; open panes follow them at once.
 Choices are kept for every reviewer, across restarts. Esc or the × closes the settings.

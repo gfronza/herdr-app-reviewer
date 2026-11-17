@@ -41,6 +41,14 @@ line beside its new version, and `w` again goes back to one column. The choice i
 reviewer, across restarts. Movement, selection, and comments work the same: `j`/`k` go through a
 changed block's removed lines, then its added ones. A click on a line selects its new side.
 
+**All files.** `a`, or the **All files** button, shows every listed file's diff in one list,
+each under a heading with its status, path, and line counts; `a` again shows one file at a time.
+The choice is kept for every reviewer, across restarts. Files come in the file list's order, those in
+collapsed folders included. The file list follows the cursor, and selecting a file, or `f`/`F`,
+moves to its heading. `j`/`k`, `]`/`[`, and find go on from one file into the next. A comment
+covers lines of one file. Markdown files show as a diff. The list holds up to 200 files and stops
+adding files after 20,000 diff lines; a note says how many it shows.
+
 **Rendered Markdown.** `m` shows a Markdown file (`.md`, `.markdown`) rendered, as it reads
 after the changes, in place of its diff; `m` again brings the diff back. It stays on as you move
 between files, and other files keep showing their diff. Opening a search match in a Markdown
@@ -50,7 +58,7 @@ and `d` ask you to switch back first.
 **Find in the diff.** `/` opens a find box under the diff. As you type, the cursor jumps to the
 next match from where it was, wrapping around, and every match is marked; case is ignored. Enter closes the box and keeps the
 matches; `n` and `N` go to the next and previous one, wrapping around, also in other files you
-open. `Esc` clears them. Find looks at the lines the diff shows, not the whole file.
+open. `Esc` clears them. Find looks at the lines the diff shows, not the whole file; with all files shown, at every file's.
 
 **Search.** `p` lists the files in the pane; type parts of a path to narrow it, and Enter opens
 the file, expanding its repo and folders if they were collapsed. `P` searches the changed lines
@@ -102,8 +110,8 @@ the same tab and moves the keyboard there. It does not press Enter: you read it 
 several agents in the tab, a picker asks which one. Sending clears the comments.
 
 **Settings.** `,`, or the **Settings** button (a gear in the pane header), opens the settings.
-Layout, diff, file list, and wrap are the choices `l`, `w`, `z`, and the wrap button make, and a
-change shows in open panes at once. Starting scope, This session, and Markdown set how a new pane
+Layout, diff, what the diff shows, file list, and wrap are the choices `l`, `w`, `a`, `z`, and the
+wrap button make, and a change shows in open panes at once. Starting scope, This session, and Markdown set how a new pane
 starts. Limits set how often the changes are read again, how many files, diff lines, and
 characters per line are shown, and how many commits `G` lists; open panes follow them at once.
 Choices are kept for every reviewer, across restarts. Esc or the × closes the settings.
@@ -130,6 +138,7 @@ Choices are kept for every reviewer, across restarts. Esc or the × closes the s
 | `p` | Go to a listed file by name |
 | `P` | Search the changed lines of every listed file |
 | `w` | Switch the diff between one column and old beside new (kept for every reviewer, across restarts); beside, each side takes half the pane and cuts long lines unless they wrap |
+| `a` | Show every listed file's diff in one list, or one file at a time (kept for every reviewer, across restarts) |
 | `z` | Switch the file list between a folder tree and a flat list (kept for every reviewer, across restarts) |
 | `,` | Open the settings |
 | `B` / `G` | Pick the base branch / pick commits |
@@ -147,7 +156,7 @@ Each action is also a command, so you can bind it in `keys.json` under `"mod:rev
 `reviewer.comment`, `reviewer.edit`, `reviewer.delete`, `reviewer.copy`, `reviewer.send`,
 `reviewer.layout`, `reviewer.cancel`, `reviewer.scope-uncommitted`, `reviewer.scope-branch`,
 `reviewer.scope-turn`, `reviewer.scope-commits`, `reviewer.session-only`, `reviewer.pick-base`,
-`reviewer.pick-commits`, `reviewer.file-view`, `reviewer.diff-view`, `reviewer.markdown`, `reviewer.find`, `reviewer.next-match`, `reviewer.prev-match`, `reviewer.find-file`, `reviewer.search-code`, `reviewer.folders`, `reviewer.settings`, `reviewer.wrap` (wraps long lines, kept for every
+`reviewer.pick-commits`, `reviewer.file-view`, `reviewer.diff-view`, `reviewer.all-files`, `reviewer.markdown`, `reviewer.find`, `reviewer.next-match`, `reviewer.prev-match`, `reviewer.find-file`, `reviewer.search-code`, `reviewer.folders`, `reviewer.settings`, `reviewer.wrap` (wraps long lines, kept for every
 reviewer across restarts; no key by default), and
 `reviewer.toggle-repo` (collapses or expands the selected file's repo; no key by default).
 
@@ -192,6 +201,8 @@ reviewer across restarts; no key by default), and
 - Files over 1 MiB, and untracked files that are not UTF-8 text, are listed but their contents
   are not shown.
 - Up to 10 folders can be watched, base folder included.
+- With all files shown, every listed file's diff is read again each time the changes are, on every
+  file change and at the Refresh interval, so a large change set makes each refresh slower.
 - Lines longer than 500 characters are shown without syntax colors. By default, up to 1,000
   changed files per repo and 1,500 diff lines per file are shown, and lines are cut at 4,000
   characters; past those, a notice says the view is cut. Settings can change them, but files

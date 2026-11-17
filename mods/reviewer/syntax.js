@@ -66,6 +66,33 @@ export function createHighlighter(rows, language) {
   };
 }
 
+/**
+ * One highlighter over several files' rows laid end to end, each colored in its own language. A
+ * part's rows start at `offset` in the list. Null when no part has a language.
+ * @param {{ path: string, rows: { kind: string, text: string }[], offset: number }[]} parts
+ */
+export function combineHighlighters(parts) {
+  const all = parts.flatMap((p) => {
+    const language = languageFor(p.path);
+    return language ? [{ hl: createHighlighter(p.rows, language), start: p.offset, end: p.offset + p.rows.length, done: false }] : [];
+  });
+  if (!all.length) return null;
+  return {
+    step(budget = 20000) {
+      const next = all.find((h) => !h.done);
+      if (next) next.done = next.hl.step(budget);
+      return all.every((h) => h.done);
+    },
+    quick(start, end) {
+      for (const h of all) if (start < h.end && h.start < end) h.hl.quick(Math.max(start, h.start) - h.start, Math.min(end, h.end) - h.start);
+    },
+    runs(rowIndex) {
+      const h = all.find((x) => x.start <= rowIndex && rowIndex < x.end);
+      return h ? h.hl.runs(rowIndex - h.start) : null;
+    },
+  };
+}
+
 function sideOf(rows, includes, owns) {
   const indexes = [];
   rows.forEach((row, i) => {

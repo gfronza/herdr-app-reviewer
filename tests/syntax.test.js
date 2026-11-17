@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { languageFor, createHighlighter, colorFor } from "../mods/reviewer/syntax.js";
+import { languageFor, createHighlighter, combineHighlighters, colorFor } from "../mods/reviewer/syntax.js";
 
 function rowsOf(spec) {
   let old = 1;
@@ -313,3 +313,37 @@ test("colorFor gives keyword, string and comment three different theme colors", 
   assert.equal(colorFor("no-such-scope", theme), null);
   assert.equal(colorFor(null, theme), null);
 });
+
+test("combineHighlighters: each file is colored in its own language at its place in the list", () => {
+  const py = rowsOf([["hunk", "@@ -1 +1 @@"], ["add", "def f(): return 'x'"]]);
+  const text = rowsOf([["add", "def f(): return 'x'"]]);
+  // A heading row at 0, then tsDiff's rows from 1, a heading, the text file, a heading, the Python file.
+  const h = combineHighlighters([
+    { path: "a.ts", rows: tsDiff, offset: 1 },
+    { path: "NOTES", rows: text, offset: tsDiff.length + 2 },
+    { path: "b.py", rows: py, offset: tsDiff.length + 4 },
+  ]);
+  finish(h, 50);
+  assert.deepEqual(scopes(h, 1 + 4), scopes(createHighlighterDone(tsDiff, "typescript"), 4));
+  assert.equal(h.runs(0), null);
+  assert.equal(h.runs(tsDiff.length + 2), null, "a file without a language stays plain");
+  const def = tsDiff.length + 5;
+  assert.equal(joined(h, def), "def f(): return 'x'");
+  assert.ok(scopes(h, def).includes("keyword"), `got ${scopes(h, def)}`);
+});
+
+test("combineHighlighters: quick colors a range across files, and no language gives no highlighter", () => {
+  const py = rowsOf([["add", "import os"]]);
+  const h = combineHighlighters([{ path: "a.ts", rows: tsDiff, offset: 0 }, { path: "b.py", rows: py, offset: tsDiff.length + 1 }]);
+  h.quick(tsDiff.length - 1, tsDiff.length + 2);
+  assert.ok(h.runs(tsDiff.length - 1));
+  assert.ok(h.runs(tsDiff.length + 1));
+  assert.equal(h.runs(0), null, "rows outside the range wait for step");
+  assert.equal(combineHighlighters([{ path: "README", rows: py, offset: 0 }]), null);
+});
+
+function createHighlighterDone(rows, language) {
+  const h = createHighlighter(rows, language);
+  finish(h, 50);
+  return h;
+}

@@ -8,7 +8,7 @@ const reader = (state) => (key) => state[key];
 test("valueOf: every setting reads its default when nothing is stored", () => {
   const read = reader({});
   assert.deepEqual(Object.fromEntries(OPTIONS.map((o) => [o.key, valueOf(o.key, read)])), {
-    layout: "stacked", diff: "unified", files: "tree", wrap: "off", scope: "uncommitted", session: "off", markdown: "diff",
+    layout: "stacked", diff: "unified", show: "one", files: "tree", wrap: "off", scope: "uncommitted", session: "off", markdown: "diff",
     refresh: "10", fileLimit: "1000", diffLines: "1500", lineLength: "4000", commits: "100",
   });
 });
@@ -19,8 +19,8 @@ test("valueOf: a setting with its own key reads that key", () => {
 });
 
 test("valueOf: the other settings read their entry in the settings object", () => {
-  const read = reader({ [SETTINGS_KEY]: { scope: "branch", session: "on", markdown: "rendered" } });
-  assert.deepEqual(["scope", "session", "markdown"].map((k) => valueOf(k, read)), ["branch", "on", "rendered"]);
+  const read = reader({ [SETTINGS_KEY]: { scope: "branch", session: "on", markdown: "rendered", show: "all" } });
+  assert.deepEqual(["scope", "session", "markdown", "show"].map((k) => valueOf(k, read)), ["branch", "on", "rendered", "all"]);
 });
 
 test("valueOf: a stored value that is not a choice reads as the default", () => {

@@ -39,11 +39,10 @@ const KEYS = {
 // rows one filter pass could run into the script time limit.
 const SEARCH_ROWS = 100000;
 const SEARCH_HITS = 200;
-// All files reads every listed diff on each refresh and lays them out on each render; past these
-// a refresh takes seconds.
+// All files reads every listed diff on each refresh and lays them all out on each render, so both
+// grow with the list.
 const ALL_FILES = 200;
 const ALL_ROWS = 20000;
-const PAST_LIMIT = "Past what the all-files view shows: press a to see this file alone";
 const WATCH_KEY = "reviewer.watch";
 const BASES_KEY = "reviewer.bases";
 const run_exec = (cmd, args, opts) => exec(cmd, args, { cwd: opts?.cwd });
@@ -287,7 +286,6 @@ export default class Reviewer extends View {
     this.applyPending(cx);
   }
 
-  // In waves, stopping at ALL_FILES files or once ALL_ROWS rows are read, or when the scope changes.
   async readAll(entries) {
     const spec = this.spec, listed = entries.slice(0, ALL_FILES).map((entry) => this.partOf(entry)), parts = [];
     let rows = 0;
@@ -321,7 +319,7 @@ export default class Reviewer extends View {
   applyPending(cx) {
     const want = this.pending, part = want && this.diff?.parts.find((p) => p.key === want.key);
     if (!part) {
-      if (want && this.diff?.all && allFiles()) { this.pending = null; this.say(PAST_LIMIT, cx); }
+      if (want && this.diff?.all && allFiles()) { this.pending = null; this.say("Past what the all-files view shows: press a to see this file alone", cx); }
       return;
     }
     this.pending = null;
@@ -905,7 +903,7 @@ export default class Reviewer extends View {
     // Split, a block's last row can share a line above its other rows, so the comment goes under the lowest one.
     const after = new Map(), commented = new Set();
     for (const p of placed) {
-      const line = !p.gone ? lastLine(lines, p.span.start, p.span.end) : p.part.offset > p.part.start ? lastLine(lines, p.part.start, p.part.start) : -1;
+      const line = !p.gone ? lastLine(lines, p.span.start, p.span.end) : this.diff.all ? lastLine(lines, p.part.start, p.part.start) : -1;
       after.set(line, [...(after.get(line) ?? []), p]);
       if (!p.gone) for (let i = p.span.start; i <= p.span.end; i++) commented.add(i);
     }

@@ -323,8 +323,10 @@ test("combineHighlighters: each file is colored in its own language at its place
     { path: "NOTES", rows: text, offset: tsDiff.length + 2 },
     { path: "b.py", rows: py, offset: tsDiff.length + 4 },
   ]);
+  const alone = createHighlighter(tsDiff, "typescript");
   finish(h, 50);
-  assert.deepEqual(scopes(h, 1 + 4), scopes(createHighlighterDone(tsDiff, "typescript"), 4));
+  finish(alone, 50);
+  assert.deepEqual(scopes(h, 1 + 4), scopes(alone, 4));
   assert.equal(h.runs(0), null);
   assert.equal(h.runs(tsDiff.length + 2), null, "a file without a language stays plain");
   const def = tsDiff.length + 5;
@@ -341,9 +343,3 @@ test("combineHighlighters: quick colors a range across files, and no language gi
   assert.equal(h.runs(0), null, "rows outside the range wait for step");
   assert.equal(combineHighlighters([{ path: "README", rows: py, offset: 0 }]), null);
 });
-
-function createHighlighterDone(rows, language) {
-  const h = createHighlighter(rows, language);
-  finish(h, 50);
-  return h;
-}

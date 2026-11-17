@@ -8,7 +8,6 @@
  * @param {boolean} headed Puts a row of kind "file" above each file's rows.
  */
 export function joinDiffs(files, headed) {
-  /** @type {{ kind: string, old?: number | null, new?: number | null, text?: string }[]} */
   const rows = [];
   const parts = [];
   for (const file of files) {
@@ -23,7 +22,7 @@ export function joinDiffs(files, headed) {
 /** The part that row `i` belongs to; a heading belongs to the file below it. */
 export function partAt(parts, i) {
   for (let k = parts.length - 1; k >= 0; k--) if (parts[k].start <= i) return parts[k];
-  return parts[0] ?? null;
+  return null;
 }
 
 /**

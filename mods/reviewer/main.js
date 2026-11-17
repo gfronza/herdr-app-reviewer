@@ -1,4 +1,4 @@
-import { View, div } from "gpui-kit";
+import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import {
   agents, closeOverlay, exec, focused, layout, nextCommand, openOverlay, panes, pickFolder, props, readTextFile, run,
@@ -854,7 +854,11 @@ export default class Reviewer extends View {
     return v_flex().id("reviewer-settings").size_full().overflow_y_scroll().px(24).py(18).bg(t.popover).text_color(t.foreground).text_size(13)
       .track_focus(this.handle)
       .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); closeOverlay(props().overlay); } })
-      .child(div().text_size(15).font_semibold().child("Reviewer settings"))
+      .child(h_flex().items_center()
+        .child(div().flex_1().text_size(15).font_semibold().child("Reviewer settings"))
+        .child(div().id("settings-close").p(4).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+          .on_click(() => closeOverlay(props().overlay))
+          .child(svg("mods/reviewer/icons/close.svg").size(14).text_color(t.muted))))
       .child(group("Every pane", "Open panes change at once", OPTIONS.filter((o) => !o.start)))
       .child(group("New panes", "Panes opened after a change start this way", OPTIONS.filter((o) => o.start)));
   }

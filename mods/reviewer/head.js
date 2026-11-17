@@ -13,7 +13,7 @@ const SCOPES = [
 ];
 
 /**
- * @param {{ base: string | null, unsent: number, view: string, scope: string, sessionOnly: boolean, sideBySide: boolean, wrap: boolean }} s
+ * @param {{ base: string | null, unsent: number, view: string, scope: string, sessionOnly: boolean, allFiles: boolean, sideBySide: boolean, wrap: boolean }} s
  */
 export function headEntry(s) {
   const changes = s.view === "changes";
@@ -21,6 +21,7 @@ export function headEntry(s) {
   const controls = changes ? [
     ...SCOPES.map(([kind, label, tooltip]) => ({ command: `reviewer.scope-${kind}`, label, tooltip, selected: s.scope === kind })),
     { command: "reviewer.session-only", icon: icon("session"), tooltip: "This session only (o)", selected: s.sessionOnly, gap: true },
+    { command: "reviewer.all-files", icon: icon("files"), tooltip: "All files in one diff (a)", selected: s.allFiles },
     { command: "reviewer.layout", icon: icon("side"), tooltip: "Side by side (l)", selected: s.sideBySide },
     { command: "reviewer.wrap", icon: icon("wrap"), tooltip: "Wrap long lines", selected: s.wrap },
   ] : [];

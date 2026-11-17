@@ -11,6 +11,10 @@ test("findRows: rows holding the text, ignoring case, but no hunk header", () =>
   assert.deepEqual(findRows(rows, "FOO"), [0, 2, 4]);
 });
 
+test("findRows: a file heading never matches", () => {
+  assert.deepEqual(findRows([{ kind: "file", text: "foo.js" }, ...rows], "foo"), [1, 3, 5]);
+});
+
 test("findRows: an empty query or no hit finds nothing", () => {
   assert.deepEqual(findRows(rows, ""), []);
   assert.deepEqual(findRows(rows, "zzz"), []);

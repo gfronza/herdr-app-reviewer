@@ -6,7 +6,7 @@ import {
 } from "herdr";
 import { collectScope, fileKey, MAX_FOLDERS, resolveRoots } from "./scope.js";
 import { fileDiff, fileText } from "./git.js";
-import { colorFor, createHighlighter, languageFor } from "./syntax.js";
+import { colorFor, combineHighlighters } from "./syntax.js";
 import { createComment, formatReview, locate } from "./review.js";
 import { moveLine, nextChange, nextFile, selectionRange } from "./nav.js";
 import { commitOf, defaultBase, listBranches, listCommits, orderRun } from "./revs.js";
@@ -17,6 +17,7 @@ import { findRows, markRuns, nextMatch, searchFiles } from "./find.js";
 import { ACTIONS_KEY, HEADS_KEY, headEntry, headerShowsControls, pruneHeads } from "./head.js";
 import { wrapRuns, wrappedLines } from "./wrap.js";
 import { OPTIONS, labelOf, valueOf, writeOf } from "./settings.js";
+import { joinDiffs, keepCursor, partAt } from "./all.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
@@ -32,12 +33,16 @@ const KEYS = {
   v: "select", c: "comment", e: "edit", d: "delete", y: "copy", s: "send", l: "layout", escape: "cancel",
   u: "scope-uncommitted", b: "scope-branch", t: "scope-turn", g: "scope-commits", B: "pick-base", G: "pick-commits",
   o: "session-only", z: "file-view", w: "diff-view", m: "markdown", "/": "find", n: "next-match", N: "prev-match", p: "find-file", P: "search-code",
-  ",": "settings",
+  ",": "settings", a: "all-files",
 };
 // Code search holds every listed diff in memory and filters it on each keystroke; past this many
 // rows one filter pass could run into the script time limit.
 const SEARCH_ROWS = 100000;
 const SEARCH_HITS = 200;
+// All files reads every listed diff on each refresh and lays them all out on each render, so both
+// grow with the list.
+const ALL_FILES = 200;
+const ALL_ROWS = 20000;
 const WATCH_KEY = "reviewer.watch";
 const BASES_KEY = "reviewer.bases";
 const run_exec = (cmd, args, opts) => exec(cmd, args, { cwd: opts?.cwd });
@@ -69,11 +74,14 @@ function saveExtraFolders(base, folders) {
   setShared(WATCH_KEY, { .../** @type {object} */ (shared(WATCH_KEY) ?? {}), [base]: folders });
 }
 
-// Layout, file list, diff and wrap are one choice for every reviewer, kept across restarts.
+// Layout, file list, diff, what it shows and wrap are one choice for every reviewer, kept across restarts.
 const sideBySide = () => valueOf("layout", shared) === "side";
+const allFiles = () => valueOf("show", shared) === "all";
 const treeView = () => valueOf("files", shared) === "tree";
 const splitDiff = () => valueOf("diff", shared) === "split";
 const wrapLines = () => valueOf("wrap", shared) === "on";
+// What the diff is built from: one file, or every file in the list's order, which the tree and flat lists differ in.
+const showing = () => (allFiles() ? `all-${valueOf("files", shared)}` : "one");
 const saveSetting = (/** @type {string} */ key, /** @type {string} */ value) => setShared(...writeOf(key, value, shared));
 const gitLimits = () => ({ files: Number(valueOf("fileLimit", shared)), rows: Number(valueOf("diffLines", shared)), line: Number(valueOf("lineLength", shared)) });
 
@@ -104,13 +112,13 @@ export default class Reviewer extends View {
     // A press elsewhere takes the keyboard away from the box: close it, keeping its text, but leave
     // the keyboard where it went, which may be another pane.
     this.finder.on("blur", (_e, cx) => { if (this.findOpen) { this.findOpen = false; cx.notify(); } });
-    this.findOpen = false; this.findQuery = ""; this.findFrom = 0; this.pendingRow = null;
+    this.findOpen = false; this.findQuery = ""; this.findFrom = 0; this.pending = null;
     this.query = ""; this.chooser = null; this.scopeKind = valueOf("scope", shared); this.commitPick = null;
     this.collapsed = new Set();
     this.scope = null; this.files = []; this.selected = null; this.diff = null; this.hl = null; this.hlGen = 0;
     this.area = "files"; this.cursor = 0; this.sel = null; this.comments = []; this.nextId = 1;
     this.box = null; this.picking = null; this.view = "changes"; this.notice = null; this.watching = new Map();
-    this.visible = []; this.textWidth = 0; this.charWidth = 0;
+    this.visible = []; this.shown = { start: 0, end: 0 }; this.textWidth = 0; this.charWidth = 0; this.shows = showing();
     this.rendered = valueOf("markdown", shared) === "rendered";
     this.sessionOnly = valueOf("session", shared) === "on"; this.since = new Date(); this.observe = createTracker(); this.turnError = null;
     // A turn's snapshots stay while an unsent comment, or one being written, can still be diffed.
@@ -119,7 +127,7 @@ export default class Reviewer extends View {
       keep: () => new Set([...this.comments, this.box?.draft].filter(Boolean).map((c) => turnOf(c.scope.key))),
     });
     this.timed = { at: Date.now(), limits: JSON.stringify(gitLimits()) };
-    cx.timer.every(250, (cx) => { this.followAgents(cx); this.publishHead(); this.refreshWhenDue(cx); });
+    cx.timer.every(250, (cx) => { this.followAgents(cx); this.publishHead(); this.followShow(cx); this.refreshWhenDue(cx); });
     cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
@@ -137,6 +145,17 @@ export default class Reviewer extends View {
     if (limits === this.timed.limits && Date.now() - this.timed.at < Number(valueOf("refresh", shared)) * 1000) return;
     this.timed = { at: Date.now(), limits };
     this.refresh(cx);
+  }
+
+  // The settings screen can change what the diff shows, and the list's order, too, so a change is
+  // noticed here, not where it is made.
+  followShow(cx) {
+    if (showing() === this.shows) return;
+    this.shows = showing();
+    cx.spawn(async (cx) => {
+      try { await this.loadDiff(cx, true); } catch (e) { this.error = String(e); }
+      cx.notify();
+    });
   }
 
   folders() { return this.base ? [this.base, ...extraFolders(this.base)] : []; }
@@ -188,7 +207,8 @@ export default class Reviewer extends View {
           this.scope = scope; this.spec = spec;
           this.files = [...this.scope.repos.flatMap((r) => r.files.map((file) => ({ root: r.root, range: r.range, file }))), ...this.orphans()];
           this.watch([...new Set(this.scope.folders.filter((f) => f.state === "repo").map((f) => f.root))], cx);
-          if (!this.files.some((f) => entryKey(f) === this.selected)) {
+          // All files keeps its diff and cursor; the selection follows the cursor once it loads.
+          if (!allFiles() && !this.files.some((f) => entryKey(f) === this.selected)) {
             const first = this.shownFiles()[0] ?? this.files[0];
             this.pick(first ? entryKey(first) : null);
           }
@@ -254,34 +274,76 @@ export default class Reviewer extends View {
     });
   }
 
-  async loadDiff(cx) {
-    const entry = this.files.find((f) => entryKey(f) === this.selected);
-    if (!entry) { this.setDiff(null, cx); return; }
-    const spec = this.spec;
-    const [result, text] = await Promise.all([
-      fileDiff(entry.root, entry.file, run_exec, readText, entry.range, gitLimits()),
-      isMarkdown(entry.file.path) ? fileText(entry.root, entry.file.path, run_exec, readText, entry.range) : null,
-    ]);
-    if (this.selected !== entryKey(entry) || this.spec !== spec) return;
-    const label = entry.key ? entry.label : this.scope.repos.find((r) => r.root === entry.root)?.label ?? null;
-    const scope = { key: entry.key ?? this.keyFor(entry.root), label, range: entry.range };
-    this.setDiff({ key: this.selected, root: entry.root, path: entry.file.path, scope, untracked: entry.file.untracked, text, ...result }, cx);
-    if (this.pendingRow === null) this.cursor = moveLine(this.diff.rows, this.cursor, 0);
-    else { this.landOn(this.pendingRow); this.pendingRow = null; }
+  // The selected file's diff, or with all files every listed file's, in list order with folds ignored.
+  async loadDiff(cx, reveal = false) {
+    const all = allFiles(), shows = showing(), spec = this.spec, key = this.selected;
+    const entries = all ? this.shownFiles(new Set()) : this.files.filter((f) => entryKey(f) === key);
+    if (!entries.length) { this.setDiff(null, cx); return; }
+    const parts = all ? await this.readAll(entries) : [await this.readPart(this.partOf(entries[0]), true)];
+    if (this.spec !== spec || showing() !== shows || (!all && this.selected !== key)) return;
+    const before = this.diff;
+    this.setDiff({ ...joinDiffs(parts, all), all, listed: entries.length }, cx);
+    this.cursor = keepCursor(before, this.cursor, this.diff);
+    if (this.sel) this.sel = { anchor: keepCursor(before, this.sel.anchor, this.diff), end: this.sel.end === null ? null : keepCursor(before, this.sel.end, this.diff) };
+    this.follow();
+    if (reveal) this.reveal(true);
+    this.applyPending(cx);
   }
 
-  // A search hit's row comes from the diff read when the search opened; if the file changed since,
-  // the nearest match at or after it stands in.
-  landOn(row) {
-    const matches = this.matches();
-    this.cursor = moveLine(this.diff.rows, matches.includes(row) || !matches.length ? row : nextMatch(matches, row - 1, 1), 0);
-    this.reveal();
+  async readAll(entries) {
+    const spec = this.spec, listed = entries.slice(0, ALL_FILES).map((entry) => this.partOf(entry)), parts = [];
+    let rows = 0;
+    for (let i = 0; i < listed.length && rows < ALL_ROWS && this.spec === spec; i += 16) {
+      const wave = await Promise.all(listed.slice(i, i + 16).map((part) => this.readPart(part, false)));
+      for (const part of wave) if (rows < ALL_ROWS) { parts.push(part); rows += part.rows.length; }
+    }
+    return parts;
+  }
+
+  // Taken before any diff is read: a scope switch meanwhile empties the scope.
+  partOf(entry) {
+    const label = entry.key ? entry.label : this.scope.repos.find((r) => r.root === entry.root)?.label ?? null;
+    return { key: entryKey(entry), entry, root: entry.root, path: entry.file.path, untracked: entry.file.untracked,
+      scope: { key: entry.key ?? this.keyFor(entry.root), label, range: entry.range } };
+  }
+
+  // Alone, a file that fails to read fails the load; among all files it says why under its heading.
+  async readPart(part, alone) {
+    const { entry } = part;
+    const diff = fileDiff(entry.root, entry.file, run_exec, readText, entry.range, gitLimits());
+    const [result, text] = await Promise.all([
+      alone ? diff : diff.catch((e) => ({ rows: [], cut: false, notice: String(e) })),
+      alone && isMarkdown(entry.file.path) ? fileText(entry.root, entry.file.path, run_exec, readText, entry.range) : null,
+    ]);
+    return { ...part, text, ...result };
+  }
+
+  // A file or a search hit picked before the diff holding it loaded. A search hit's row comes from
+  // the diff read when the search opened; if the file changed since, the nearest match at or after it stands in.
+  applyPending(cx) {
+    const want = this.pending, part = want && this.diff?.parts.find((p) => p.key === want.key);
+    if (!part) {
+      if (want && this.diff?.all && allFiles()) { this.pending = null; this.say("Past what the all-files view shows: press a to see this file alone", cx); }
+      return;
+    }
+    this.pending = null;
+    if (want.row === null) { this.cursor = part.start; this.showFile(part.start); }
+    else {
+      const matches = this.matches(), row = part.offset + want.row;
+      this.cursor = moveLine(this.diff.rows, matches.includes(row) || !matches.length ? row : nextMatch(matches, row - 1, 1), 0);
+      this.reveal();
+    }
+    this.follow();
+  }
+
+  // With all files, the list's selection is the file the cursor is in.
+  follow() {
+    if (this.diff?.all) this.selected = partAt(this.diff.parts, this.cursor).key;
   }
 
   setDiff(diff, cx) {
     this.diff = diff;
-    const language = diff && languageFor(diff.path);
-    this.hl = language ? createHighlighter(diff.rows, language) : null;
+    this.hl = diff && combineHighlighters(diff.parts);
     this.highlight(cx);
   }
 
@@ -307,11 +369,13 @@ export default class Reviewer extends View {
   }
 
   pick(key) {
-    this.selected = key; this.diff = null; this.hl = null; this.hlGen++; this.cursor = 0; this.sel = null; this.pendingRow = null;
+    this.selected = key; this.diff = null; this.hl = null; this.hlGen++; this.cursor = 0; this.sel = null; this.pending = null;
   }
 
   select(entry, cx) {
     const key = entryKey(entry);
+    // All files holds every diff already: selecting a file goes to it.
+    if (allFiles()) { this.pending = { key, row: null }; this.applyPending(cx); cx.notify(); return; }
     if (key === this.selected) return;
     this.pick(key);
     cx.spawn(async (cx) => {
@@ -353,10 +417,14 @@ export default class Reviewer extends View {
     if (comment) this.box = { id: comment.id };
     else {
       const { from, to } = this.range() ?? { from: this.cursor, to: this.cursor };
-      if (!this.diff.rows.slice(from, to + 1).some((r) => r.kind !== "hunk")) return;
+      const part = partAt(this.diff.parts, from);
+      if (partAt(this.diff.parts, to) !== part) { this.say("A comment stays in one file: select lines of one file", cx); return; }
+      // A selection can start on the file's heading, which has no line to anchor to.
+      const first = Math.max(from, part.offset) - part.offset, last = to - part.offset;
+      if (!part.rows.slice(first, last + 1).some((r) => r.kind !== "hunk")) return;
       // Anchored now, so a refresh while the box is open cannot move the comment to other lines.
-      const draft = createComment({ id: 0, root: this.diff.root, path: this.diff.path, rows: this.diff.rows, from, to, text: "" });
-      this.box = { draft: { ...draft, untracked: this.diff.untracked, scope: this.diff.scope } };
+      const draft = createComment({ id: 0, root: part.root, path: part.path, rows: part.rows, from: first, to: last, text: "" });
+      this.box = { draft: { ...draft, untracked: part.untracked, scope: part.scope } };
     }
     this.input.set_value(comment?.text ?? "");
     this.input.focus();
@@ -581,12 +649,14 @@ export default class Reviewer extends View {
     this.notice = null;
     this.closeChooser(cx);
     this.area = row === null ? "files" : "diff";
-    if (entryKey(entry) !== this.selected) this.select(entry, cx);
-    if (row === null) return;
-    // A line is found in the diff, not in the rendered file.
-    if (isMarkdown(entry.file.path)) this.rendered = false;
-    if (this.diff) this.landOn(row);
-    else this.pendingRow = row;
+    if (row === null) { this.select(entry, cx); return; }
+    // A line is found in the diff, not in the rendered file; all files never renders one.
+    if (!allFiles()) {
+      if (isMarkdown(entry.file.path)) this.rendered = false;
+      this.select(entry, cx);
+    }
+    this.pending = { key: entryKey(entry), row };
+    this.applyPending(cx);
   }
 
   // ── Keyboard ───────────────────────────────────────────────────────────
@@ -647,12 +717,14 @@ export default class Reviewer extends View {
       "pick-base": () => this.openBasePicker(null, cx),
       "pick-commits": () => this.openCommitPicker(cx),
       "toggle-repo": () => this.fold(this.selectedRoot()),
-      "file-view": () => saveSetting("files", treeView() ? "flat" : "tree"),
+      "file-view": () => { saveSetting("files", treeView() ? "flat" : "tree"); this.followShow(cx); },
       "diff-view": () => saveSetting("diff", splitDiff() ? "unified" : "split"),
+      "all-files": () => { saveSetting("show", allFiles() ? "one" : "all"); this.followShow(cx); },
       markdown: () => {
         this.rendered = !this.rendered;
         if (this.markdownShown()) this.sel = null;
-        else if (this.diff && !isMarkdown(this.diff.path)) this.say(`Markdown files will show ${this.rendered ? "rendered" : "as a diff"}`, cx);
+        else if (allFiles()) this.say(`With one file shown, Markdown files will show ${this.rendered ? "rendered" : "as a diff"}`, cx);
+        else if (this.diff && !isMarkdown(this.diff.parts[0].path)) this.say(`Markdown files will show ${this.rendered ? "rendered" : "as a diff"}`, cx);
       },
       "chooser-next": () => this.moveChooser(1),
       "chooser-prev": () => this.moveChooser(-1),
@@ -682,6 +754,7 @@ export default class Reviewer extends View {
     const pick = /^pick-([1-9])$/.exec(action);
     if (pick && this.picking?.[Number(pick[1]) - 1]) this.sendTo(this.picking[Number(pick[1]) - 1], cx);
     else actions[action]?.();
+    this.follow();
     cx.notify();
   }
 
@@ -693,10 +766,11 @@ export default class Reviewer extends View {
     const state = {
       base: this.base, folders: this.scope?.folders, heads: this.scope?.heads, repos: this.scope?.repos?.map((r) => ({ root: r.root, cut: r.cut, files: r.files })),
       selected: this.selected?.replace("\0", ":"), area: this.area, cursor: this.cursor, sel: this.range(), box: this.box,
-      diff: this.diff && { path: this.diff.path, notice: this.diff.notice, cut: this.diff.cut, rows: this.diff.rows.length },
+      diff: this.diff && { path: this.diff.parts[0].path, notice: this.diff.parts[0].notice, cut: this.diff.parts[0].cut, rows: this.diff.rows.length,
+        all: this.diff.all, files: this.diff.parts.map((p) => `${p.start}:${p.path}`), listed: this.diff.listed },
       colored: this.diff ? this.diff.rows.filter((_, i) => this.hl?.runs(i)).length : 0,
       comments: this.comments, items: this.layout().items.filter((it) => it.comment).map((it) => ({ id: it.comment.id, text: it.text, stale: it.stale })),
-      loading: Boolean(this.loadingSince), picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked", fileView: treeView() ? "tree" : "flat", diffView: splitDiff() ? "split" : "unified", rendered: this.markdownShown(), find: { open: this.findOpen, query: this.findQuery, matches: this.matches(), status: this.findStatus() }, markdown: this.diff?.text?.length ?? null,
+      loading: Boolean(this.loadingSince), picking: this.picking, notice: this.notice, error: this.error, view: this.view, layout: sideBySide() ? "side" : "stacked", fileView: treeView() ? "tree" : "flat", diffView: splitDiff() ? "split" : "unified", show: allFiles() ? "all" : "one", rendered: this.markdownShown(), find: { open: this.findOpen, query: this.findQuery, matches: this.matches(), status: this.findStatus() }, markdown: this.diff?.parts[0].text?.length ?? null,
       lines: this.layout().items.map((it) => (it.comment ? `# ${it.text}` : `${it.left ?? "-"}|${it.right ?? "-"}`)),
       scope: this.scopeKind, spec: this.spec, sessionOnly: this.sessionOnly, session: [...this.turns.session().files].map((k) => k.replace("\0", ":")),
       turnError: this.turnError, earlier: this.files.filter((f) => f.key).map((f) => `${f.key} ${f.file.path}`), collapsed: [...this.collapsed].map((k) => k.replace("\0", ":")),
@@ -759,9 +833,18 @@ export default class Reviewer extends View {
     else this.collapsed.add(key);
   }
 
-  reveal() {
+  reveal(center = false) {
     const item = this.layout().items.findIndex((it) => it.left === this.cursor || it.right === this.cursor);
-    if (item >= 0) this.scroll.scroll_to_item(item);
+    if (item >= 0) this.scroll.scroll_to_item(item, center ? "center" : "top");
+  }
+
+  // The list scrolls an item only as far as its nearer edge, so a heading below the view would stop
+  // at the bottom. Bringing the item about a screen past it to the bottom edge puts it near the top.
+  showFile(row) {
+    const { items } = this.layout(), item = items.findIndex((it) => it.left === row || it.right === row);
+    if (item < 0) return;
+    const { start, end } = this.shown;
+    this.scroll.scroll_to_item(item < start ? item : Math.min(item + Math.max(0, end - start - 3), items.length - 1));
   }
 
   // ── Find in the diff ───────────────────────────────────────────────────
@@ -779,7 +862,7 @@ export default class Reviewer extends View {
   findTyped(cx) {
     this.findQuery = this.finder.value();
     const at = nextMatch(this.matches(), this.findFrom - 1, 1);
-    if (at >= 0) { this.area = "diff"; this.cursor = at; this.reveal(); }
+    if (at >= 0) { this.area = "diff"; this.cursor = at; this.reveal(); this.follow(); }
     cx.notify();
   }
 
@@ -798,7 +881,7 @@ export default class Reviewer extends View {
     if (!this.findQuery) { this.say("Press / to find in the diff", cx); return; }
     if (this.markdownShown()) { this.say("Find works on the diff: press m to show it", cx); return; }
     const at = nextMatch(this.matches(), this.cursor, dir);
-    if (at < 0) { this.say(`No match for "${this.findQuery}" in this file`, cx); return; }
+    if (at < 0) { this.say(`No match for "${this.findQuery}" in ${this.diff?.all ? "the listed files" : "this file"}`, cx); return; }
     this.area = "diff"; this.cursor = at; this.reveal();
   }
 
@@ -813,20 +896,22 @@ export default class Reviewer extends View {
   // Screen lines, each holding a diff row per side (the same row twice when unified), with each
   // comment's text as extra lines under the line of its last row. Each comment is
   // located once here: locating per drawn row ran past the script time limit with many comments.
-  // A comment whose lines are gone sits above the first row, and the first row reaches it.
+  // A comment whose lines are gone sits at its file's top, and the file's first row reaches it: its
+  // heading with all files, since a file with no lines left has no other row.
   layout() {
     if (!this.diff) return { items: [], placed: [], commented: new Set() };
-    const placed = this.comments.filter((c) => c.scope.key === this.diff.scope.key && c.root === this.diff.root && c.path === this.diff.path).map((c) => {
-      const at = locate(c, this.diff.rows);
-      return { c, stale: at.stale, end: at.end, span: at.start < 0 ? { start: 0, end: 0 } : at };
-    });
+    const placed = this.diff.parts.flatMap((part) => this.comments
+      .filter((c) => c.scope.key === part.scope.key && c.root === part.root && c.path === part.path).map((c) => {
+        const at = locate(c, part.rows), gone = at.start < 0;
+        return { c, stale: at.stale, gone, part, span: gone ? { start: part.start, end: part.start } : { start: at.start + part.offset, end: at.end + part.offset } };
+      }));
     const lines = splitDiff() ? splitLines(this.diff.rows) : this.diff.rows.map((_, i) => ({ left: i, right: i }));
     // Split, a block's last row can share a line above its other rows, so the comment goes under the lowest one.
     const after = new Map(), commented = new Set();
     for (const p of placed) {
-      const line = p.end >= 0 ? lastLine(lines, p.span.start, p.span.end) : -1;
+      const line = !p.gone ? lastLine(lines, p.span.start, p.span.end) : this.diff.all ? lastLine(lines, p.part.start, p.part.start) : -1;
       after.set(line, [...(after.get(line) ?? []), p]);
-      if (p.end >= 0) for (let i = p.span.start; i <= p.span.end; i++) commented.add(i);
+      if (!p.gone) for (let i = p.span.start; i <= p.span.end; i++) commented.add(i);
     }
     const items = [];
     const commentRows = (list) => {
@@ -906,7 +991,7 @@ export default class Reviewer extends View {
     this.headPane = pane;
     const head = headEntry({
       base: this.base ?? null, unsent: this.comments.length, view: this.view,
-      scope: this.scopeKind, sessionOnly: this.sessionOnly, sideBySide: sideBySide(), wrap: wrapLines(),
+      scope: this.scopeKind, sessionOnly: this.sessionOnly, allFiles: allFiles(), sideBySide: sideBySide(), wrap: wrapLines(),
     });
     const heads = /** @type {Record<string, unknown>} */ (shared(HEADS_KEY) ?? {});
     if (JSON.stringify(heads[pane]) === JSON.stringify(head)) return;
@@ -928,6 +1013,7 @@ export default class Reviewer extends View {
         button(t, `scope-${kind}`, label, (cx) => this.act(`scope-${kind}`, cx)).when(this.scopeKind === kind, (b) => b.bg(t.selected))))
       .child(div().flex_1())
       .child(button(t, "session-only", "This session", (cx) => this.act("session-only", cx)).when(this.sessionOnly, (b) => b.bg(t.selected)))
+      .child(button(t, "all-files", "All files", (cx) => this.act("all-files", cx)).when(allFiles(), (b) => b.bg(t.selected)))
       .child(button(t, "layout", sideBySide() ? "Stacked" : "Side by side", (cx) => this.act("layout", cx)))
       .child(button(t, "wrap", "Wrap", (cx) => this.act("wrap", cx)).when(wrapLines(), (b) => b.bg(t.selected)));
   }
@@ -1013,11 +1099,10 @@ export default class Reviewer extends View {
 
   fileRow(t, { entry, prefix, name, depth }) {
     const { file } = entry, key = entryKey(entry);
-    const color = file.status === "A" ? t.ansi2 : file.status === "M" ? t.blocked : file.status === "·" ? t.dim : t.ansi1;
     return h_flex().id(`file-${key}`).h(24).flex_none().pl(8 + depth * 14).pr(8).gap(8).items_center().rounded(6).cursor_pointer()
       .when(this.selected === key, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { this.area = "files"; this.select(this.files.find((f) => entryKey(f) === key), cx); })
-      .child(div().w(12).flex_none().text_size(11).text_color(color).child(file.status))
+      .child(div().w(12).flex_none().text_size(11).text_color(statusColor(t, file.status)).child(file.status))
       .child(h_flex().flex_1().min_w(0)
         .child(div().text_color(t.dim).truncate().child(prefix))
         .child(div().min_w(0).truncate().child(name)))
@@ -1025,13 +1110,14 @@ export default class Reviewer extends View {
       .when(file.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${file.del}`)));
   }
 
+  // All files shows Markdown as a diff: a rendered file has no fixed height to scroll in the list.
   markdownShown() {
-    return this.rendered && Boolean(this.diff) && isMarkdown(this.diff.path);
+    return this.rendered && Boolean(this.diff) && !this.diff.all && isMarkdown(this.diff.parts[0].path);
   }
 
   // The file as it reads at the scope's end, rendered; it scrolls on its own.
   markdownView(t) {
-    const { key, text } = this.diff;
+    const { key, text } = this.diff.parts[0];
     return v_flex().flex_1().min_w(0).min_h(0)
       .child(note(t, "Rendered as it reads after these changes · m shows the diff"))
       .child(text === null ? div().p(12).text_color(t.dim).child("Nothing to render: the file is deleted here, binary, or over 1 MiB")
@@ -1042,7 +1128,10 @@ export default class Reviewer extends View {
   diffView(t) {
     if (this.markdownShown()) return this.markdownView(t);
     const diff = this.diff, { items, commented } = this.layout(), m = diffMetrics(), split = splitDiff();
-    const longest = Math.max(0, ...(diff?.rows ?? []).map((r) => r.text.length * m.char));
+    // One file's notice and cut go above its diff; with all files, each file's go on its heading.
+    const one = diff && !diff.all ? diff.parts[0] : null;
+    // Not Math.max(...rows): all files can pass the engine's limit on arguments.
+    const longest = (diff?.rows ?? []).reduce((n, r) => Math.max(n, r.text.length), 0) * m.char;
     // Split, each side takes half the pane, so both stay on screen; a longer line is cut at its edge.
     const width = Math.max(300, longest + 2 * m.gutter + 45);
     // Wrapped, a row breaks at the columns its text has (less two for the scrollbar), and takes one
@@ -1050,13 +1139,14 @@ export default class Reviewer extends View {
     const wrap = wrapLines();
     const cols = wrap && this.textWidth && this.charWidth ? Math.floor(this.textWidth / this.charWidth) - 2 : 0;
     const lines = (it) => (!cols || it.comment ? 1 : Math.max(...[it.left, it.right].map((i) =>
-      i === null || diff.rows[i].kind === "hunk" ? 1 : wrappedLines(diff.rows[i].text.length, cols))));
+      i === null || banner(diff.rows[i]) ? 1 : wrappedLines(diff.rows[i].text.length, cols))));
     const heights = cols ? items.map((it) => m.row * lines(it)) : m.row;
     const sel = this.range();
     // overflow_x_scrollbar() wraps its child, so the flex size goes on a plain parent.
     return v_flex().flex_1().min_w(0).min_h(0).font_family(m.font).text_size(m.size)
-      .when(Boolean(diff?.notice), (e) => e.child(div().p(12).text_color(t.dim).child(diff.notice)))
-      .when(Boolean(diff?.cut), (e) => e.child(note(t, `Showing the first ${labelOf("diffLines", shared)} lines`)))
+      .when(Boolean(one?.notice), (e) => e.child(div().p(12).text_color(t.dim).child(one.notice)))
+      .when(Boolean(one?.cut), (e) => e.child(note(t, `Showing the first ${labelOf("diffLines", shared)} lines`)))
+      .when(Boolean(diff?.all) && diff.parts.length < diff.listed, (e) => e.child(note(t, `Showing the first ${diff.parts.length} of ${diff.listed} files · a shows one file at a time`)))
       .child(div().id("diff-area").flex_1().min_h(0).relative()
         .when(wrap, (e) => e.child(this.wrapProbe(m, split)))
         .child(div().id("diff-x").size_full().overflow_x_scrollbar()
@@ -1064,8 +1154,9 @@ export default class Reviewer extends View {
           .child(v_virtual_list("diff", items.length, heights, (i) => items[i].comment ? `c${items[i].comment.id}-${i}` : `r${items[i].left ?? ""}:${items[i].right ?? ""}`,
             (range) => {
               this.visible = rowRange(items, range);
+              this.shown = { start: range.start, end: range.end };
               return items.slice(range.start, range.end).map((it) => it.comment ? this.commentRow(t, it, m)
-                : !split || diff.rows[it.left]?.kind === "hunk" ? this.diffRow(t, it.right, sel, commented, m, cols)
+                : !split || banner(diff.rows[it.left]) ? this.diffRow(t, it.right, sel, commented, m, cols)
                 : h_flex().w_full().h(m.row * lines(it)).flex_none()
                   .child(this.halfRow(t, it.left, "old", sel, commented, m, cols))
                   .child(this.halfRow(t, it.right, "new", sel, commented, m, cols)));
@@ -1096,11 +1187,13 @@ export default class Reviewer extends View {
     if (!key.startsWith("r")) return;
     const [left, right] = key.slice(1).split(":");
     this.area = "diff"; this.cursor = Number(right || left); this.handle.focus();
+    this.follow();
     cx.notify();
   }
 
   diffRow(t, i, sel, commented, m, cols = 0) {
     const row = this.diff.rows[i];
+    if (row.kind === "file") return this.fileHeading(t, i, m);
     if (row.kind === "hunk") {
       return h_flex().id(`row-${i}`).w_full().h(m.row).flex_none().px(12).bg(t.raised).text_color(t.dim)
         .when(this.area === "diff" && this.cursor === i, (e) => e.bg(t.selected))
@@ -1115,6 +1208,22 @@ export default class Reviewer extends View {
       .child(top(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(row.old === null ? "" : String(row.old))))
       .child(top(div().w(m.gutter).flex_none().text_right().text_color(t.dim).child(row.new === null ? "" : String(row.new))))
       .children(this.rowText(t, row, i, lines > 1 ? { cols, height: m.row } : null));
+  }
+
+  // With all files, the row above each file's diff: the file as the list shows it, and why its diff
+  // is short or missing.
+  fileHeading(t, i, m) {
+    const part = partAt(this.diff.parts, i), { entry } = part, { file } = entry;
+    const repo = this.watchedRoots().length > 1 ? `${repoName(part.root)}/` : "";
+    const why = [entry.key ? entry.label : entry.orphan && "no longer changed, with comments", part.notice,
+      part.cut && `showing the first ${labelOf("diffLines", shared)} lines`].filter(Boolean).join(" · ");
+    return h_flex().id(`row-${i}`).w_full().h(m.row).flex_none().px(12).gap(8).items_center()
+      .bg(this.area === "diff" && this.cursor === i ? t.selected : t.raised).when(i > 0, (e) => e.border_t(1).border_color(t.border))
+      .child(div().w(12).flex_none().text_color(statusColor(t, file.status)).child(file.status))
+      .child(div().min_w(0).truncate().font_semibold().child(`${repo}${part.path}`))
+      .when(file.add > 0, (e) => e.child(div().flex_none().text_color(t.ansi2).child(`+${file.add}`)))
+      .when(file.del > 0, (e) => e.child(div().flex_none().text_color(t.ansi1).child(`−${file.del}`)))
+      .when(Boolean(why), (e) => e.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(why)));
   }
 
   // One side of a split line: its line number, sign, and text, or a blank where the other side has more lines.
@@ -1227,7 +1336,7 @@ export default class Reviewer extends View {
     }
     if (this.findOpen) {
       return v_flex().flex_none().p(8).gap(6).border_t(1).border_color(t.border)
-        .child(div().text_size(11).text_color(this.notice ? t.foreground : t.muted).child(this.notice ?? `Find in ${this.diff?.path ?? "the diff"}${this.findQuery ? `: ${this.findStatus()}` : ""}`))
+        .child(div().text_size(11).text_color(this.notice ? t.foreground : t.muted).child(this.notice ?? `Find in ${this.diff?.all ? "every listed file" : this.diff?.parts[0].path ?? "the diff"}${this.findQuery ? `: ${this.findStatus()}` : ""}`))
         .child(div().id("find-box").h(30).px(8).flex().items_center().rounded(6).border_1().border_color(t.accent)
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .child(Input.new(this.finder).h_full().text_size(12).text_color(t.foreground)));
@@ -1244,7 +1353,7 @@ export default class Reviewer extends View {
     return h_flex().flex_none().h(28).px(12).gap(12).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
       .child(div().flex_1().min_w(0).truncate().text_color(this.error ? t.blocked : this.notice ? t.foreground : t.dim)
         .child(this.error ?? this.notice ?? (this.findQuery && this.diff && !this.markdownShown() ? `Find "${this.findQuery}": ${this.findStatus()} · n/N next/previous · Esc clears`
-          : "j/k move · ]/[ change · f/F file · c comment · / find · p file · P search · w split · z tree · m markdown · u/b/t/g scope · o session · l layout · y copy · s send · , settings")));
+          : "j/k move · ]/[ change · f/F file · c comment · / find · p file · P search · w split · a all files · z tree · m markdown · u/b/t/g scope · o session · l layout · y copy · s send · , settings")));
   }
 }
 
@@ -1253,6 +1362,11 @@ export default class Reviewer extends View {
 function rowRange(items, range) {
   return spans(items.slice(range.start, range.end).flatMap((it) => (it.comment ? [] : [it.left, it.right])).filter((i) => i !== null));
 }
+
+// Rows drawn across the whole width, unwrapped and never commented on: hunk headers and file headings.
+const banner = (row) => row?.kind === "hunk" || row?.kind === "file";
+
+const statusColor = (t, status) => (status === "A" ? t.ansi2 : status === "M" ? t.blocked : status === "·" ? t.dim : t.ansi1);
 
 function button(t, id, label, onClick) {
   return div().id(id).h(24).px(10).flex().items_center().rounded(6).border_1().border_color(t.border).text_size(11).cursor_pointer()

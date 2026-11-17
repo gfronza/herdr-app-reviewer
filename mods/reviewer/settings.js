@@ -10,6 +10,7 @@ export const SETTINGS_KEY = "reviewer.settings";
 export const OPTIONS = [
   { key: "layout", group: "view", store: "reviewer.layout", title: "Layout", description: "The file list above the diff, or on its right (l)", choices: { stacked: "Stacked", side: "Side by side" }, default: "stacked" },
   { key: "diff", group: "view", store: "reviewer.diff", title: "Diff", description: "Changes in one column, or the old code beside the new (w)", choices: { unified: "One column", split: "Old beside new" }, default: "unified" },
+  { key: "show", group: "view", title: "Diff shows", description: "The selected file, or every listed file one after another (a)", choices: { one: "One file", all: "All files" }, default: "one" },
   { key: "files", group: "view", store: "reviewer.files", title: "File list", description: "Files in a folder tree, or a flat list (z)", choices: { tree: "Tree", flat: "Flat" }, default: "tree" },
   { key: "wrap", group: "view", store: "reviewer.wrap", title: "Wrap long lines", description: "Long lines wrap, or run past the pane's edge", choices: { off: "Off", on: "On" }, default: "off" },
   { key: "scope", group: "start", title: "Starting scope", description: "What a new reviewer pane shows first", choices: { uncommitted: "Local", branch: "Branch", turn: "Turn" }, default: "uncommitted" },

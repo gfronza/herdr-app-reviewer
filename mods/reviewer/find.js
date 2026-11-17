@@ -7,13 +7,13 @@ function folded(text, query) {
   return t.length === text.length && q.length === query.length ? [t, q] : [text, query];
 }
 
-/** Indexes of the rows whose text holds `query`. Hunk headers are left out: they are not marked. */
+/** Indexes of the rows whose text holds `query`. Hunk headers and file headings are left out: they are not marked. */
 export function findRows(rows, query) {
   if (!query) return [];
   const out = [];
   rows.forEach((row, i) => {
     const [t, q] = folded(row.text, query);
-    if (row.kind !== "hunk" && t.includes(q)) out.push(i);
+    if (row.kind !== "hunk" && row.kind !== "file" && t.includes(q)) out.push(i);
   });
   return out;
 }

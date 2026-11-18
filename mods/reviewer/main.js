@@ -2,7 +2,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import {
   agents, closeOverlay, exec, focused, layout, nextCommand, openOverlay, panes, pickFolder, props, readTextFile, run,
-  setShared, settings, shared, theme as herdrTheme, watchFolder, writeTextFile,
+  setShared, settings, shared, spaces, theme as herdrTheme, watchFolder, writeTextFile,
 } from "herdr";
 import { collectScope, fileKey, MAX_FOLDERS, resolveRoots } from "./scope.js";
 import { fileDiff, fileText } from "./git.js";
@@ -42,7 +42,7 @@ const KEYS = {
   v: "select", c: "comment", e: "edit", d: "delete", y: "copy", s: "send", l: "layout", escape: "cancel",
   u: "scope-uncommitted", b: "scope-branch", t: "scope-turn", g: "scope-commits", B: "pick-base", G: "pick-commits",
   o: "session-only", z: "file-view", w: "diff-view", m: "markdown", "/": "find", n: "next-match", N: "prev-match", p: "find-file", P: "search-code",
-  ",": "settings", a: "all-files",
+  ",": "settings", a: "all-files", ".": "change-folder",
 };
 // Code search holds every listed diff in memory and filters it on each keystroke; past this many
 // rows one filter pass could run into the script time limit.
@@ -54,6 +54,7 @@ const ALL_FILES = 200;
 const ALL_ROWS = 20000;
 const WATCH_KEY = "reviewer.watch";
 const BASES_KEY = "reviewer.bases";
+const BASE_FOLDER_KEY = "reviewer.base-folder";
 const run_exec = (cmd, args, opts) => exec(cmd, args, { cwd: opts?.cwd });
 // readTextFile rejects on bytes that are not UTF-8; git.js expects null for an unreadable file.
 const readText = (path) => readTextFile(path).catch(() => null);
@@ -74,6 +75,7 @@ function toggle() {
   const pane = f.pane ? panes().find((p) => p.pane === f.pane) : null;
   const base = pane?.cwd || f.cwd;
   if (!base) return;
+  if (pickedBases()[f.tab]) savePickedBase(f.tab, null);
   run("pane.split", { direction: "right", ...(f.pane ? { pane: f.pane } : {}), mod: "reviewer", props: { base, tab: f.tab } });
 }
 
@@ -81,6 +83,15 @@ function toggle() {
 const extraFolders = (base) => /** @type {Record<string, string[]>} */ (shared(WATCH_KEY) ?? {})[base] ?? [];
 function saveExtraFolders(base, folders) {
   setShared(WATCH_KEY, { .../** @type {object} */ (shared(WATCH_KEY) ?? {}), [base]: folders });
+}
+
+// A base folder changed in the pane, by tab (a tab holds one reviewer), so a reload or restart keeps
+// it. A reviewer opened with the key starts from the focused pane's folder again.
+const pickedBases = () => /** @type {Record<string, string>} */ (shared(BASE_FOLDER_KEY) ?? {});
+function savePickedBase(tab, folder) {
+  const live = new Set(spaces().flatMap((s) => s.tabs.map((t) => t.id)));
+  const kept = Object.fromEntries(Object.entries(pickedBases()).filter(([t]) => t !== tab && live.has(t)));
+  setShared(BASE_FOLDER_KEY, folder ? { ...kept, [tab]: folder } : kept);
 }
 
 // Layout, file list, diff, what it shows and wrap are one choice for every reviewer, kept across restarts.
@@ -106,8 +117,8 @@ export default class Reviewer extends View {
     const p = props();
     if (p?.screen === "settings") { this.handle = cx.focus_handle(); this.handle.focus(); return; }
     if (p?.overlay) { toggle(); closeOverlay(p.overlay); return; }
-    this.base = p?.base;
     this.tab = p?.tab;
+    this.base = pickedBases()[this.tab] ?? p?.base;
     this.handle = cx.focus_handle();
     this.scroll = VirtualListScrollHandle.new();
     this.input = InputState.new({ placeholder: "Comment, Enter to save, Esc to cancel" });
@@ -209,10 +220,11 @@ export default class Reviewer extends View {
         do {
           this.again = false;
           if (this.scopeKind === "turn" || this.sessionOnly) await this.turns.refresh();
-          const spec = this.scopeSpec(), only = this.sessionOnly ? this.turns.session() : null;
-          const scope = await collectScope(this.folders(), spec, run_exec, readText, only, gitLimits());
-          // The scope, a base, a turn, or the session filter changed while this pass ran: its result belongs to neither.
-          if (JSON.stringify(spec) !== JSON.stringify(this.scopeSpec()) || Boolean(only) !== this.sessionOnly) { this.again = true; continue; }
+          const spec = this.scopeSpec(), only = this.sessionOnly ? this.turns.session() : null, folders = this.folders();
+          const scope = await collectScope(folders, spec, run_exec, readText, only, gitLimits());
+          // The scope, a base, a turn, the folders, or the session filter changed while this pass ran: its result belongs to neither.
+          if (JSON.stringify(spec) !== JSON.stringify(this.scopeSpec()) || JSON.stringify(folders) !== JSON.stringify(this.folders())
+            || Boolean(only) !== this.sessionOnly) { this.again = true; continue; }
           this.scope = scope; this.spec = spec;
           this.files = [...this.scope.repos.flatMap((r) => r.files.map((file) => ({ root: r.root, range: r.range, file }))), ...this.orphans()];
           this.watch([...new Set(this.scope.folders.filter((f) => f.state === "repo").map((f) => f.root))], cx);
@@ -396,16 +408,31 @@ export default class Reviewer extends View {
 
   // ── Watched folders ────────────────────────────────────────────────────
 
-  addFolder(cx) {
+  // "change" picks a new base folder, "add" one more folder to watch.
+  pickFolderFor(mode, cx) {
+    if (mode === "add" && this.folders().length >= MAX_FOLDERS) { this.say(`Already watching ${MAX_FOLDERS} folders; remove one first`, cx); return; }
     cx.spawn(async (cx) => {
-      if (this.folders().length >= MAX_FOLDERS) { this.say(`Already watching ${MAX_FOLDERS} folders; remove one first`, cx); return; }
-      const folder = await pickFolder({ prompt: "Watch a folder" });
-      if (folder && !this.folders().includes(folder)) {
-        saveExtraFolders(this.base, [...extraFolders(this.base), folder]);
-        this.refresh(cx);
-      }
+      const folder = await pickFolder({ prompt: mode === "change" ? "Base folder" : "Watch a folder" });
+      if (folder) this.useFolder(mode, folder, cx);
       cx.notify();
     });
+  }
+
+  useFolder(mode, folder, cx) {
+    if (mode === "add") {
+      if (this.folders().includes(folder)) return;
+      saveExtraFolders(this.base, [...extraFolders(this.base), folder]);
+    } else {
+      this.view = "changes";
+      if (folder === this.base) return;
+      // As with a scope switch, nothing from the old folders shows while the new ones load. The new
+      // base brings its own watch list; comments on files it no longer shows stay listed.
+      this.base = folder;
+      savePickedBase(this.tab, folder === props()?.base ? null : folder);
+      this.scope = null; this.spec = null; this.files = [];
+      this.pick(this.selected);
+    }
+    this.refresh(cx);
   }
 
   removeFolder(folder, cx) {
@@ -717,6 +744,7 @@ export default class Reviewer extends View {
       layout: () => saveSetting("layout", sideBySide() ? "stacked" : "side"),
       wrap: () => saveSetting("wrap", wrapLines() ? "off" : "on"),
       folders: () => { this.view = this.view === "folders" ? "changes" : "folders"; },
+      "change-folder": () => this.pickFolderFor("change", cx),
       settings: () => openOverlay({ mod: "reviewer", kind: "dialog", width: 540, height: 640, props: { screen: "settings" } }),
       "scope-uncommitted": () => this.setScope("uncommitted", cx),
       "scope-branch": () => this.setScope("branch", cx),
@@ -1035,18 +1063,21 @@ export default class Reviewer extends View {
       .children(states.map((f, i) => h_flex().id(`folder-${i}`).h(28).flex_none().px(8).gap(8).items_center().rounded(6).hover((s) => s.bg(t.hover))
         .child(div().flex_1().min_w(0).truncate().when(f.state === "repo" && f.root !== f.folder, (e) => e.tooltip(`in ${f.root}`)).child(f.folder))
         .child(div().max_w(200).truncate().text_size(11).text_color(f.state === "repo" ? t.dim : t.blocked).child(label(f)))
+        .when(f.folder === this.base, (e) => e.child(div().text_size(11).text_color(t.dim).child("base")))
         .child(f.folder === this.base
-          ? div().w(60).text_size(11).text_color(t.dim).child("base")
+          ? button(t, "change-base", "Change", (cx) => this.pickFolderFor("change", cx))
           : button(t, `remove-${i}`, "Remove", (cx) => this.removeFolder(f.folder, cx)))))
-      .child(h_flex().pt(6).child(button(t, "add-folder", "Add folder", (cx) => this.addFolder(cx))));
+      .child(h_flex().pt(6).child(button(t, "add-folder", "Add folder", (cx) => this.pickFolderFor("add", cx))));
   }
 
   changesView(t) {
     const noRepo = this.scope && !this.scope.folders.some((f) => f.state === "repo");
     if (noRepo) {
       return v_flex().flex_1().p(16).gap(10)
-        .child(div().text_color(t.muted).child("No git repository here. Add a folder that holds one."))
-        .child(h_flex().child(button(t, "add-folder-empty", "Add folder", (cx) => this.addFolder(cx))));
+        .child(div().text_color(t.muted).child("No git repository here. Change the folder, or add one that holds a repository."))
+        .child(h_flex().gap(8)
+          .child(button(t, "change-folder-empty", "Change folder", (cx) => this.pickFolderFor("change", cx)))
+          .child(button(t, "add-folder-empty", "Add folder", (cx) => this.pickFolderFor("add", cx))));
     }
     // Side by side puts the files on the right, as herdr-reviewr does.
     return sideBySide()
@@ -1361,7 +1392,7 @@ export default class Reviewer extends View {
     return h_flex().flex_none().h(28).px(12).gap(12).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
       .child(div().flex_1().min_w(0).truncate().text_color(this.error ? t.blocked : this.notice ? t.foreground : t.dim)
         .child(this.error ?? this.notice ?? (this.findQuery && this.diff && !this.markdownShown() ? `Find "${this.findQuery}": ${this.findStatus()} · n/N next/previous · Esc clears`
-          : "j/k move · ]/[ change · f/F file · c comment · / find · p file · P search · w split · a all files · z tree · m markdown · u/b/t/g scope · o session · l layout · y copy · s send · , settings")));
+          : "j/k move · ]/[ change · f/F file · c comment · / find · p file · P search · w split · a all files · z tree · m markdown · u/b/t/g scope · o session · . folder · l layout · y copy · s send · , settings")));
   }
 }
 

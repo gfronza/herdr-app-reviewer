@@ -63,6 +63,14 @@ repository." and "Change folder" and "Add folder" buttons.
   focus afterwards. `.` or Change picks a new base folder: the pane drops what it showed, loads the
   new base's repos and its own added folders, and keeps the pick across reloads and restarts.
   Opening a reviewer with the key forgets the tab's pick.
+- Change and Add folder open `pickFolder`, or, with the Folder picker setting on Typed, the
+  picker box at the bottom: empty, open terminals' folders (this tab's first) and recent picks,
+  words filtering them; a path starting with `/` or `~` lists that folder's subfolders by name
+  prefix (any case, exact name first, hidden ones only after a typed `.`), with a "Use <folder>"
+  row first when the path ends in `/` and a `git` tag on repos. Tab fills in the selected folder
+  plus `/`, keeping `~` as typed; Enter picks; Esc cancels. Each folder is read once per box with
+  `find -L <dir> -mindepth 1 -maxdepth 1 -type d` and `find -L <dir> -mindepth 2 -maxdepth 2 -name .git`;
+  `folders.js` holds the parsing and the rows.
 - The list and the open diff refresh when anything under a watched repo changes on disk, and on a
   10-second timer. Colors fill in after the text: visible rows first, then the rest in batches.
 - Keys while the pane has the keyboard: `j`/`k` move, `]`/`[` jump between change blocks, `f`/`F`
@@ -97,8 +105,9 @@ repository." and "Change folder" and "Add folder" buttons.
 - `herdr` functions: `exec` (git), `readTextFile`, `watchFolder` (one loop per repo),
   `pickFolder`, `shared`/`setShared` (key `reviewer.watch`: base folder → added folders; key
   `reviewer.base-folder`: tab id → base folder picked in the pane, pruned to live tabs; key
+  `reviewer.recent-folders`: the last 10 folders picked, newest first; key
   `reviewer.layout`: `"stacked"` or `"side"`; key `reviewer.bases`: repo root → picked base),
-  `agents`, `panes`, `focused`, `spaces` (live tab ids), `props`, `nextCommand`, `run` (`pane.split`, `pane.close`,
+  `agents`, `panes`, `focused`, `spaces` (live tab ids), `home`, `props`, `nextCommand`, `run` (`pane.split`, `pane.close`,
   `pane.focus`, `terminal.paste`), `closeOverlay`, `theme`, `settings`.
 - gpui-kit: `v_virtual_list` for the diff (clicks through `on_item_click`), `InputState`/`Input`
   for the comment box and the picker filter (its `submit` event carries `shift`), `Scrollbar`, `VirtualListScrollHandle`, `cx.write_to_clipboard`.

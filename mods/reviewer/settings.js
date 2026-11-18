@@ -15,6 +15,7 @@ export const OPTIONS = [
   { key: "wrap", group: "view", store: "reviewer.wrap", title: "Wrap long lines", description: "Long lines wrap, or run past the pane's edge", choices: { off: "Off", on: "On" }, default: "off" },
   // Keys that look like array indexes ("1") would sort first; these keep the choices in order.
   { key: "textSize", group: "view", title: "Diff text size", description: "The terminal's font size, or a few points from it", choices: { "-2": "−2", "-1": "−1", same: "Terminal", "+1": "+1", "+2": "+2" }, default: "same" },
+  { key: "picker", group: "view", title: "Folder picker", description: "What Change and Add folder open: the system's picker, or a box to type a path in, with suggestions", choices: { system: "System", typed: "Typed" }, default: "system" },
   { key: "scope", group: "start", title: "Starting scope", description: "What a new reviewer pane shows first", choices: { uncommitted: "Local", branch: "Branch", turn: "Turn" }, default: "uncommitted" },
   { key: "session", group: "start", title: "This session at start", description: "A new pane shows only the files this session's turns changed (o)", choices: { off: "Off", on: "On" }, default: "off" },
   { key: "markdown", group: "start", title: "Markdown at start", description: "A new pane shows Markdown files as a diff, or rendered (m)", choices: { diff: "Diff", rendered: "Rendered" }, default: "diff" },

@@ -8,7 +8,7 @@ const reader = (state) => (key) => state[key];
 test("valueOf: every setting reads its default when nothing is stored", () => {
   const read = reader({});
   assert.deepEqual(Object.fromEntries(OPTIONS.map((o) => [o.key, valueOf(o.key, read)])), {
-    layout: "stacked", diff: "unified", show: "one", files: "tree", wrap: "off", textSize: "same", scope: "uncommitted", session: "off", markdown: "diff",
+    layout: "stacked", diff: "unified", show: "one", files: "tree", wrap: "off", textSize: "same", picker: "system", scope: "uncommitted", session: "off", markdown: "diff",
     refresh: "10", fileLimit: "1000", diffLines: "1500", lineLength: "4000", commits: "100",
   });
 });

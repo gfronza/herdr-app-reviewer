@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import {
-  agents, closeOverlay, exec, focused, layout, nextCommand, openOverlay, panes, pickFolder, props, readTextFile, run,
+  agents, closeOverlay, exec, focused, home, layout, nextCommand, openOverlay, panes, pickFolder, props, readTextFile, run,
   setShared, settings, shared, spaces, theme as herdrTheme, watchFolder, writeTextFile,
 } from "herdr";
 import { collectScope, fileKey, MAX_FOLDERS, resolveRoots } from "./scope.js";
@@ -18,6 +18,7 @@ import { ACTIONS_KEY, HEADERS_KEY, HEADS_KEY, headEntry, headerShowsControls, pr
 import { wrapRuns, wrappedLines } from "./wrap.js";
 import { OPTIONS, labelOf, valueOf, writeOf } from "./settings.js";
 import { joinDiffs, keepCursor, partAt } from "./all.js";
+import { knownFolders, knownRows, namesIn, parseTyped, pathRows, remember, reposIn, tilde } from "./folders.js";
 
 // herdr.d.ts types theme colors as plain strings; gpui-kit wants `#${string}`.
 const theme = () => /** @type {Record<string, import("gpui-kit").Color>} */ (herdrTheme());
@@ -55,6 +56,7 @@ const ALL_ROWS = 20000;
 const WATCH_KEY = "reviewer.watch";
 const BASES_KEY = "reviewer.bases";
 const BASE_FOLDER_KEY = "reviewer.base-folder";
+const RECENT_KEY = "reviewer.recent-folders";
 const run_exec = (cmd, args, opts) => exec(cmd, args, { cwd: opts?.cwd });
 // readTextFile rejects on bytes that are not UTF-8; git.js expects null for an unreadable file.
 const readText = (path) => readTextFile(path).catch(() => null);
@@ -93,6 +95,9 @@ function savePickedBase(tab, folder) {
   const kept = Object.fromEntries(Object.entries(pickedBases()).filter(([t]) => t !== tab && live.has(t)));
   setShared(BASE_FOLDER_KEY, folder ? { ...kept, [tab]: folder } : kept);
 }
+
+// Folders picked with either picker, newest first, offered again by the typed one.
+const recentFolders = () => /** @type {string[]} */ (shared(RECENT_KEY) ?? []);
 
 // Layout, file list, diff, what it shows and wrap are one choice for every reviewer, kept across restarts.
 const sideBySide = () => valueOf("layout", shared) === "side";
@@ -411,6 +416,7 @@ export default class Reviewer extends View {
   // "change" picks a new base folder, "add" one more folder to watch.
   pickFolderFor(mode, cx) {
     if (mode === "add" && this.folders().length >= MAX_FOLDERS) { this.say(`Already watching ${MAX_FOLDERS} folders; remove one first`, cx); return; }
+    if (valueOf("picker", shared) === "typed") { this.openFolderBox(mode, cx); return; }
     cx.spawn(async (cx) => {
       const folder = await pickFolder({ prompt: mode === "change" ? "Base folder" : "Watch a folder" });
       if (folder) this.useFolder(mode, folder, cx);
@@ -419,6 +425,7 @@ export default class Reviewer extends View {
   }
 
   useFolder(mode, folder, cx) {
+    setShared(RECENT_KEY, remember(recentFolders(), folder));
     if (mode === "add") {
       if (this.folders().includes(folder)) return;
       saveExtraFolders(this.base, [...extraFolders(this.base), folder]);
@@ -433,6 +440,42 @@ export default class Reviewer extends View {
       this.pick(this.selected);
     }
     this.refresh(cx);
+  }
+
+  // Empty, or with words typed, the box offers the folders of open terminals and recent picks; a
+  // path starting with / or ~ lists that folder's subfolders.
+  openFolderBox(mode, cx) {
+    const skip = new Set(mode === "change" ? [this.base] : this.folders());
+    this.openChooser({ kind: "folder", mode, dirs: new Map() }, async () => ({ items: knownFolders(panes(), this.tab, recentFolders(), skip) }), cx);
+  }
+
+  // Each folder is read once per box, and the rows follow when the read comes back.
+  listFolder(c, cx) {
+    const at = parseTyped(this.query, home());
+    if ("terms" in at || c.dirs.has(at.dir)) return;
+    const listing = { names: null, repos: new Set(), error: null };
+    c.dirs.set(at.dir, listing);
+    const find = (...args) => exec("find", ["-L", at.dir, ...args], { timeout: 10000 });
+    cx.spawn(async (cx) => {
+      try {
+        const [dirs, repos] = await Promise.all([find("-mindepth", "1", "-maxdepth", "1", "-type", "d"), find("-mindepth", "2", "-maxdepth", "2", "-name", ".git")]);
+        // find exits 1 when some subfolder can't be read, and still prints the rest.
+        if (dirs.code !== 0 && !dirs.stdout) listing.error = `Can't read ${tilde(at.dir, home())}: ${dirs.stderr.split("\n")[0].split(": ").pop()}`;
+        else { listing.names = namesIn(dirs.stdout); listing.repos = new Set(reposIn(repos.stdout)); }
+      } catch (e) { listing.error = String(e); }
+      cx.notify();
+    });
+  }
+
+  // Tab writes the selected folder into the box, ending in "/", so the box lists what is in it.
+  fillFolder(cx) {
+    const c = this.chooser, row = c?.kind === "folder" && this.chooserRows()[c.at];
+    if (!row || row.use) return;
+    const at = parseTyped(this.query, home());
+    const text = "typed" in at ? `${at.typed}${row.name}/` : `${tilde(row.path, home()).replace(/\/$/, "")}/`;
+    this.filter.set_value(text);
+    this.filter.set_selected_range({ start: text.length, end: text.length });
+    this.filterTyped(cx);
   }
 
   removeFolder(folder, cx) {
@@ -626,6 +669,10 @@ export default class Reviewer extends View {
       if (c.found?.query !== this.query) c.found = { query: this.query, ...searchFiles(c.items, this.query, SEARCH_HITS) };
       return c.found.hits;
     }
+    if (c.kind === "folder") {
+      const at = parseTyped(this.query, home()), listing = "dir" in at && c.dirs.get(at.dir);
+      return "terms" in at ? knownRows(c.items, at.terms, home()) : listing?.names ? pathRows(at, listing.names, listing.repos) : [];
+    }
     if (c.kind === "commits") return c.items.filter((x) => `${x.short} ${x.subject} ${repoName(x.root)}`.toLowerCase().includes(q));
     const rows = c.items.filter((b) => b.name.toLowerCase().includes(q));
     const picked = bases()[c.root];
@@ -636,6 +683,7 @@ export default class Reviewer extends View {
   filterTyped(cx) {
     this.query = this.filter.value().trim();
     if (this.chooser) this.chooser.at = 0;
+    if (this.chooser?.kind === "folder" && this.chooser.items) this.listFolder(this.chooser, cx);
     cx.notify();
   }
 
@@ -648,6 +696,7 @@ export default class Reviewer extends View {
     const c = this.chooser, row = c && this.chooserRows()[c.at];
     if (!row) return;
     if (c.kind === "base") { this.chooseBase(c, row.forget ? null : row.typed ?? row.name, cx); return; }
+    if (c.kind === "folder") { this.closeChooser(cx); this.useFolder(c.mode, row.path, cx); return; }
     if (c.kind === "files") { this.openFile(row, null, cx); return; }
     if (c.kind === "code") { this.findQuery = this.query; this.openFile(row.entry, row.row, cx); return; }
     if (shift) { c.mark = row; this.say(`Run starts at ${row.short}; press Enter on its other end`, cx); return; }
@@ -708,7 +757,7 @@ export default class Reviewer extends View {
     }
     // The filter box takes typing and Enter; the arrows and Esc reach here.
     if (this.chooser) {
-      const action = { down: "chooser-next", up: "chooser-prev", escape: "cancel" }[e.key];
+      const action = { down: "chooser-next", up: "chooser-prev", escape: "cancel", tab: this.chooser.kind === "folder" ? "chooser-fill" : null }[e.key];
       if (action) { this.act(action, cx); cx.stop_propagation(); }
       return;
     }
@@ -767,6 +816,7 @@ export default class Reviewer extends View {
       "chooser-prev": () => this.moveChooser(-1),
       "chooser-enter": () => this.choose(false, cx),
       "chooser-mark": () => this.choose(true, cx),
+      "chooser-fill": () => this.fillFolder(cx),
       // Esc cancels the nearest thing first; the find text goes only when nothing else was open.
       cancel: () => {
         const other = Boolean(this.chooser || this.picking || this.sel || this.notice);
@@ -814,7 +864,8 @@ export default class Reviewer extends View {
       list: (({ repos, kept }) => [...repos, ...kept].flatMap((g) => g.rows.map((r) => "  ".repeat(r.depth) + (r.dir ? `${r.name}/${r.closed ? ` (${r.count})` : ""}` : r.prefix + r.name))))(this.groups()), labels: this.scope?.repos?.map((r) => ({ root: r.root, label: r.label, missing: r.missing, problem: r.problem })),
       chooser: this.chooser && {
         kind: this.chooser.kind, root: this.chooser.root, at: this.chooser.at, mark: this.chooser.mark?.short ?? null,
-        rows: this.chooserRows().map((r) => this.chooser.kind === "files" ? r.file.path : this.chooser.kind === "code" ? `${r.entry.file.path}:${r.row}`
+        rows: this.chooserRows().map((r) => this.chooser.kind === "folder" ? `${r.use ? "use " : ""}${r.path}${r.repo ? " (git)" : r.recent ? " (recent)" : ""}`
+          : this.chooser.kind === "files" ? r.file.path : this.chooser.kind === "code" ? `${r.entry.file.path}:${r.row}`
           : r.forget ? `forget ${r.forget}` : r.typed ?? r.name ?? `${repoName(r.root)} ${r.short} ${r.subject}`),
         read: this.chooser.read, cut: this.chooser.cut, partial: this.chooser.partial, more: this.chooser.found?.more,
       },
@@ -1316,6 +1367,7 @@ export default class Reviewer extends View {
       commits: () => "Pick a commit: Enter picks it, Shift+Enter marks one end of a run, Esc to cancel",
       files: () => "Go to a changed file: type parts of its path, Enter opens it, Esc to cancel",
       code: () => "Search the changed lines of every listed file: Enter opens the match, Esc to cancel",
+      folder: () => `${c.mode === "change" ? "Base folder" : "Watch a folder"}: pick one below or type a path (/ or ~); Tab fills it in, Enter picks, Esc cancels`,
     }[c.kind]();
     const picked = bases()[c.root];
     const row = (r, i) => {
@@ -1326,6 +1378,10 @@ export default class Reviewer extends View {
           div().flex_1().min_w(0).truncate().child(r.file.path),
           div().text_size(11).text_color(t.dim).child(c.several ? repoName(r.root) : ""),
         ] : c.kind === "code" ? this.hitRow(t, r)
+        : c.kind === "folder" ? [
+          div().flex_1().min_w(0).truncate().child(r.use ? `Use ${tilde(r.path, home())}` : r.name ?? tilde(r.path, home())),
+          div().text_size(11).text_color(t.dim).child(r.repo ? "git" : r.recent ? "recent" : ""),
+        ]
         : c.kind === "base" ? [
           div().flex_1().min_w(0).truncate().child(r.name),
           div().text_size(11).text_color(t.dim).child([r.name === c.defaultName && "default", r.name === picked && "picked", r.age].filter(Boolean).join(" · ")),
@@ -1346,11 +1402,19 @@ export default class Reviewer extends View {
       .child(div().id("chooser-box").h(30).px(8).flex().items_center().rounded(6).border_1().border_color(t.accent)
         .child(Input.new(this.filter).h_full().text_size(12).text_color(t.foreground)))
       .when(!c.items, (e) => e.child(note(t, c.kind === "code" ? `Reading the changed files: ${c.read} of ${c.total}` : "Loading…")))
-      .when(Boolean(c.items) && !rows.length, (e) => e.child(note(t, c.kind === "code" && !this.query ? `Type to search ${c.items.length} files` : "No matches")))
+      .when(Boolean(c.items) && !rows.length, (e) => e.child(note(t, c.kind === "code" && !this.query ? `Type to search ${c.items.length} files`
+        : c.kind === "folder" ? this.folderNote(c) : "No matches")))
       .children(rows.slice(start, start + shown).map(row))
       .when(Boolean(c.cut || c.partial || c.found?.more), (e) => e.child(note(t, [c.found?.more && `Showing the first ${SEARCH_HITS} matches`,
         c.cut && `searched the first ${c.items.length} of ${c.total} files`,
         c.partial && `${c.partial} file${c.partial === 1 ? "" : "s"} only partly searched (cut, unreadable, or failed)`].filter(Boolean).join("; "))));
+  }
+
+  // Why the box lists nothing: the folder is still being read or can't be, or nothing matches.
+  folderNote(c) {
+    const at = parseTyped(this.query, home()), listing = "dir" in at && c.dirs.get(at.dir);
+    if (listing && !listing.names) return listing.error ?? `Reading ${tilde(at.dir, home())}…`;
+    return "terms" in at && !c.items.length ? "No open terminals or recent folders; type a path starting with / or ~" : "No matches";
   }
 
   hitRow(t, { entry, rows, row }) {

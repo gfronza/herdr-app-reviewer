@@ -95,14 +95,21 @@ Every reviewer opens on Uncommitted.
 agent's turns changed since the pane opened. Edits made between turns are left out. Off by default.
 
 **Changing the base folder.** `.`, or **Change** on the base folder's row in the folders view,
-opens the system folder picker; the folder you pick becomes the base, and the pane shows its
-changes and its own list of added folders. The pane keeps it across restarts. Opening a reviewer
-with the key starts from the focused pane's folder again.
+opens the folder picker; the folder you pick becomes the base, and the pane shows its changes and
+its own list of added folders. The pane keeps it across restarts. Opening a reviewer with the key
+starts from the focused pane's folder again.
 
-**More folders.** The folder button at the top of the pane shows the watched folders. **Add folder** opens the system
-folder picker. A folder inside a repo you already watch adds nothing new; the repo shows once.
+**More folders.** The folder button at the top of the pane shows the watched folders. **Add folder** opens the folder
+picker. A folder inside a repo you already watch adds nothing new; the repo shows once.
 **Remove** takes a folder off the list. The base folder cannot be removed. The list is saved per
 base folder, so it comes back the next time a reviewer opens on that folder.
+
+**The folder picker.** By default it is the system's. With **Folder picker** set to Typed in the
+settings, a box opens at the bottom of the pane instead. Empty, it lists the folders of open
+terminals, this tab's first, then folders you picked before; words you type filter them. A path
+starting with `/` or `~` lists that folder's subfolders, the ones starting with what follows the
+last `/`; hidden ones show once you type a `.`, and repos are marked `git`. Tab fills in the
+selected folder and lists what is in it, Enter picks, Esc cancels.
 
 **Comments.** Move to a line and press `c`, or select lines with `v` first. Type the comment and
 press Enter. A comment belongs to the scope it was made in and shows only there: in Branch, to the
@@ -120,7 +127,8 @@ several agents in the tab, a picker asks which one. Sending clears the comments.
 Layout, diff, what the diff shows, file list, and wrap are the choices `l`, `w`, `a`, `z`, and the
 wrap button make, and a change shows in open panes at once. Diff text size sets the diff at the
 terminal's font size or up to two points from it; the diff otherwise takes the terminal's font,
-weight, and line height. Starting scope, This session, and Markdown set how a new pane
+weight, and line height. Folder picker chooses what Change and Add folder open: the system's
+picker or the typed box. Starting scope, This session, and Markdown set how a new pane
 starts. Limits set how often the changes are read again, how many files, diff lines, and
 characters per line are shown, and how many commits `G` lists; open panes follow them at once.
 Choices are kept for every reviewer, across restarts. Esc or the × closes the settings.
@@ -183,6 +191,9 @@ reviewer across restarts; no key by default), and
   the repo. Each pane keeps one folder, `herdr-reviewer-<tab id>` in `$TMPDIR`, holding the latest
   turn and any turn that unsent comments were made in. It runs `sh`, `cp`, `find`, `mkdir`, and
   `rm` on that folder only.
+- The typed folder picker runs `find` on the folder you type, to list its subfolders and the repos
+  among them. Listing a folder looks one level inside each subfolder, which can make macOS ask for
+  access to Desktop, Documents, or Downloads when you list your home folder.
 - It reads the status of the agents in its tab.
 - It reads files outside its own folder: the files in the folders you watch, to show untracked
   files, count their lines, and render Markdown files.

@@ -49,9 +49,10 @@ stacked from top to bottom; side by side, the file list moves to the right of th
   repo and age in `dim`.
 
 The folders view replaces the list and diff: one 28px row per watched folder with its path, a
-note ("not a git repository", "missing", "in /path/of/repo"), and a Remove button, or "base" for
-the base folder; then an "Add folder" button. When no watched folder is a repo, the changes view
-shows "No git repository here. Add a folder that holds one." and an "Add folder" button.
+note ("not a git repository", "missing", "in /path/of/repo"), and a Remove button, or "base" and
+a Change button for the base folder; then an "Add folder" button. When no watched folder is a
+repo, the changes view shows "No git repository here. Change the folder, or add one that holds a
+repository." and "Change folder" and "Add folder" buttons.
 
 ## How it behaves
 
@@ -59,7 +60,17 @@ shows "No git repository here. Add a folder that holds one." and an "Add folder"
   on a question"; `working`, `done`, and `idle` agents take the paste.
 - `mod.open:reviewer` (bound to a key) opens the pane to the right of the focused pane, bound to
   that pane's folder, and closes it when the tab already has one. The binding does not follow
-  focus afterwards.
+  focus afterwards. `.` or Change picks a new base folder: the pane drops what it showed, loads the
+  new base's repos and its own added folders, and keeps the pick across reloads and restarts.
+  Opening a reviewer with the key forgets the tab's pick.
+- Change and Add folder open `pickFolder`, or, with the Folder picker setting on Typed, the
+  picker box at the bottom: empty, open terminals' folders (this tab's first) and recent picks,
+  words filtering them; a path starting with `/` or `~` lists that folder's subfolders by name
+  prefix (any case, exact name first, hidden ones only after a typed `.`), with a "Use <folder>"
+  row first when the path ends in `/` and a `git` tag on repos. Tab fills in the selected folder
+  plus `/`, keeping `~` as typed; Enter picks; Esc cancels. Each folder is read once per box with
+  `find -L <dir> -mindepth 1 -maxdepth 1 -type d` and `find -L <dir> -mindepth 2 -maxdepth 2 -name .git`;
+  `folders.js` holds the parsing and the rows.
 - The list and the open diff refresh when anything under a watched repo changes on disk, and on a
   10-second timer. Colors fill in after the text: visible rows first, then the rest in batches.
 - Keys while the pane has the keyboard: `j`/`k` move, `]`/`[` jump between change blocks, `f`/`F`
@@ -93,8 +104,10 @@ shows "No git repository here. Add a folder that holds one." and an "Add folder"
   stale detection, the review text), and `nav.js` (cursor movement).
 - `herdr` functions: `exec` (git), `readTextFile`, `watchFolder` (one loop per repo),
   `pickFolder`, `shared`/`setShared` (key `reviewer.watch`: base folder → added folders; key
+  `reviewer.base-folder`: tab id → base folder picked in the pane, pruned to live tabs; key
+  `reviewer.recent-folders`: the last 10 folders picked, newest first; key
   `reviewer.layout`: `"stacked"` or `"side"`; key `reviewer.bases`: repo root → picked base),
-  `agents`, `panes`, `focused`, `props`, `nextCommand`, `run` (`pane.split`, `pane.close`,
+  `agents`, `panes`, `focused`, `spaces` (live tab ids), `home`, `props`, `nextCommand`, `run` (`pane.split`, `pane.close`,
   `pane.focus`, `terminal.paste`), `closeOverlay`, `theme`, `settings`.
 - gpui-kit: `v_virtual_list` for the diff (clicks through `on_item_click`), `InputState`/`Input`
   for the comment box and the picker filter (its `submit` event carries `shift`), `Scrollbar`, `VirtualListScrollHandle`, `cx.write_to_clipboard`.
@@ -129,6 +142,8 @@ shows "No git repository here. Add a folder that holds one." and an "Add folder"
   different colors; a binary file shows a notice.
 - Saving a file in a watched repo updates the list and the open diff within 3 seconds.
 - `git status`, the index, and refs are unchanged after a session.
+- `.` and a picked repo shows that repo's changes in place of the base's, and a reload keeps it;
+  the toggle key then opens a fresh reviewer on the focused pane's folder.
 - A home folder that is not a repo shows the add-folder prompt; added repos each get a group, and
   a subfolder of a watched repo adds nothing new.
 - `c`, typing, and Enter shows the comment under its line and "1 unsent"; `v`, three moves, `v`,
